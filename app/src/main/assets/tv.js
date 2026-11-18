@@ -406,6 +406,7 @@
     if (dir === 'left' || dir === 'right') setTimeout(function () { pageRowTo(e, 0); }, 60);
   }
 
+  var PRIMARY = /^(watch|play|resume|continue|start|subscribe to watch)/i;
   function firstInView() {
     var vw = innerWidth, vh = innerHeight, best = null, bs = Infinity;
     collect().forEach(function (e) {
@@ -413,6 +414,9 @@
       if (!usable(e, r, vw, vh)) return;
       if (r.top < 0 || r.left < 0 || r.top > vh || r.left > vw) return;
       var s = r.top * 2 + r.left;
+      // On a title page start on its main button (Watch / Play / Resume…)
+      var label = (e.getAttribute('aria-label') || e.textContent || '').trim();
+      if (isExplicit(e) && PRIMARY.test(label)) s -= 5000;
       if (s < bs) { bs = s; best = e; }
     });
     return best;
@@ -544,13 +548,16 @@
     e.dispatchEvent(new MouseEvent('click', o));
     dirty = true;
     setTimeout(function () { burst(600); }, 50);
-    // If the click opened a pop-up/panel, move the focus into it.
-    setTimeout(function () {
-      dirty = true;
-      validateCur();
-      if (!cur && !mainVideo()) { var f = firstInView(); if (f) setFocus(f, null); }
-      place();
-    }, 550);
+    // If the click opened a pop-up/panel, move the focus into it
+    // (checked twice: pop-ups animate in).
+    [550, 1300].forEach(function (ms) {
+      setTimeout(function () {
+        dirty = true;
+        validateCur();
+        if (!cur && !mainVideo()) { var f = firstInView(); if (f) setFocus(f, null); }
+        place();
+      }, ms);
+    });
   }
 
   /* ------------------------------------------------ 6. video player */
@@ -774,10 +781,28 @@
     dirty = true;
     cur = null;
     place();
-    setTimeout(function () {
-      if (!cur && !mainVideo()) { var f = firstInView(); if (f) setFocus(f, null); }
-    }, 900);
+    [700, 1500, 2600].forEach(function (ms) {
+      setTimeout(function () {
+        dirty = true;
+        validateCur();
+        if (!cur && !mainVideo()) { var f = firstInView(); if (f) setFocus(f, null); }
+      }, ms);
+    });
   };
+
+  // Notice page changes ourselves too (the site is a single-page app).
+  try {
+    ['pushState', 'replaceState'].forEach(function (m) {
+      var orig = history[m];
+      history[m] = function () {
+        var before = location.pathname;
+        var r = orig.apply(this, arguments);
+        if (location.pathname !== before) setTimeout(tv.onRoute, 50);
+        return r;
+      };
+    });
+    window.addEventListener('popstate', function () { setTimeout(tv.onRoute, 50); });
+  } catch (e) {}
 
   // first focus once the home page has drawn
   function initialFocus(tries) {
