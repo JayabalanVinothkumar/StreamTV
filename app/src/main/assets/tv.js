@@ -387,10 +387,21 @@
     cur = e;
     ringHidden = false;
     try { if (e.tabIndex >= 0 || isText(e)) e.focus({ preventScroll: true }); } catch (x) {}
-    try {
-      var vertical = dir === 'up' || dir === 'down';
-      e.scrollIntoView({ block: vertical ? 'center' : 'nearest', inline: 'nearest', behavior: 'smooth' });
-    } catch (x) { try { e.scrollIntoView(false); } catch (y) {} }
+    var vertical = dir === 'up' || dir === 'down';
+    var row = rowOf(e);
+    if (row) {
+      // Swiper rows move with their own arrows; native scrolling would
+      // knock them out of place, so only scroll the page vertically.
+      row.scrollLeft = 0;
+      var r = e.getBoundingClientRect(), vh = innerHeight;
+      if (vertical || r.top < 0 || r.bottom > vh) {
+        window.scrollBy({ top: (r.top + r.height / 2) - vh / 2, behavior: 'smooth' });
+      }
+    } else {
+      try {
+        e.scrollIntoView({ block: vertical ? 'center' : 'nearest', inline: 'nearest', behavior: 'smooth' });
+      } catch (x) { try { e.scrollIntoView(false); } catch (y) {} }
+    }
     burst(700);
     if (dir === 'left' || dir === 'right') setTimeout(function () { pageRowTo(e, 0); }, 60);
   }
