@@ -25,6 +25,6 @@ The app is signed with a fixed key (`app/release.keystore`), so new builds insta
 
 ## Notes
 
-- Quality: the app reports a fast connection and the full 1080p screen size, so the player starts and stays at its top quality. DRM can still cap some titles below what the official app plays.
+- Quality: playback is set to the best the Chromecast plays smoothly in the app: 1080p H.264. The player starts high and adapts to your connection (and VPN) speed. 4K, HEVC, AV1 and Dolby Vision are switched off because the TV web engine cannot decode them in time.
 - Change the start page or allowed sites in `MainActivity.java` (`START_URL`, `ALLOWED_HOSTS`).
 - Change the app name in `app/src/main/res/values/strings.xml`.

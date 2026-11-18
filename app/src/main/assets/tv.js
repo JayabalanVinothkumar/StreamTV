@@ -391,7 +391,12 @@
     autoFocused = false;
     if (dir) lastByPath[location.pathname] = e;   // only titles the user moved to
     ringHidden = false;
-    try { if (e.tabIndex >= 0 || isText(e)) e.focus({ preventScroll: true }); } catch (x) {}
+    try {
+      if (e.tabIndex >= 0 || isText(e)) e.focus({ preventScroll: true });
+      else if (document.activeElement && document.activeElement !== document.body) {
+        document.activeElement.blur();   // clear the site's own outline from the last item
+      }
+    } catch (x) {}
     var vertical = dir === 'up' || dir === 'down';
     var row = rowOf(e);
     if (row) {
