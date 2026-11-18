@@ -187,23 +187,33 @@ public class MainActivity extends Activity {
         }
         web.evaluateJavascript("window.__tv?__tv.back():false", value -> {
             if ("true".equals(value)) return;          // page handled it
-            if (web.canGoBack()) {
-                web.goBack();
-                return;
-            }
-            long now = SystemClock.elapsedRealtime();
-            if (now - lastBackAtRoot < 2500) {
-                finish();
-            } else {
-                lastBackAtRoot = now;
-                Toast.makeText(this, "Press BACK again to exit", Toast.LENGTH_SHORT).show();
-            }
+            goBackOrExit();
         });
+    }
+
+    private void goBackOrExit() {
+        if (web == null) return;
+        if (web.canGoBack()) {
+            web.goBack();
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastBackAtRoot < 2500) {
+            finish();
+        } else {
+            lastBackAtRoot = now;
+            Toast.makeText(this, "Press BACK again to exit", Toast.LENGTH_SHORT).show();
+        }
     }
 
     // -------------------------------------------------------------- bridge
 
     private class Bridge {
+        @JavascriptInterface
+        public void goBack() {
+            runOnUiThread(MainActivity.this::goBackOrExit);
+        }
+
         @JavascriptInterface
         public void setPlaying(final boolean playing) {
             runOnUiThread(() -> {

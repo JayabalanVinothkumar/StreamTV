@@ -167,7 +167,11 @@
     return ['text', 'search', 'email', 'tel', 'number', 'password', 'url'].indexOf(t) >= 0;
   }
 
+  // The layer the user is looking at: an open dialog, the full-screen player,
+  // or any fixed layer (pop-up, player page) covering the middle of the screen.
+  // Navigation never leaves this layer, so it can't jump to the page behind.
   function scopeRoot() {
+    var vw = innerWidth, vh = innerHeight;
     var dlg = document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true],dialog[open]');
     for (var i = dlg.length - 1; i >= 0; i--) {
       var r = dlg[i].getBoundingClientRect();
@@ -175,7 +179,33 @@
     }
     var fs = document.fullscreenElement || document.webkitFullscreenElement;
     if (fs && fs.tagName !== 'VIDEO') return fs;
-    return document;
+    var hit = document.elementFromPoint(vw / 2, vh / 2);
+    var layer = null;
+    for (var e = hit; e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
+      if (getComputedStyle(e).position === 'fixed') {
+        var b = e.getBoundingClientRect();
+        if (b.width * b.height >= vw * vh * 0.4) layer = e;   // keep the outermost
+      }
+    }
+    return layer || document;
+  }
+
+  function hasReactClick(e) {
+    var keys = Object.keys(e);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k.indexOf('__reactProps$') === 0 || k.indexOf('__reactEventHandlers$') === 0) {
+        var p = e[k];
+        return !!(p && (p.onClick || p.onMouseUp || p.onPointerUp || p.onMouseDown || p.onPointerDown));
+      }
+    }
+    return false;
+  }
+
+  var EXPLICIT = 'A,BUTTON,INPUT,SELECT,TEXTAREA,SUMMARY';
+  function isExplicit(e) {
+    return EXPLICIT.indexOf(e.tagName) >= 0 || /button|link|tab|menuitem|option|checkbox|radio|switch/
+      .test(e.getAttribute('role') || '');
   }
 
   function collect() {
@@ -184,34 +214,84 @@
     if (cache && !dirty && cache.root === root && now - cacheAt < 1500) return cache.list;
     var set = new Set();
     root.querySelectorAll(SEL).forEach(function (e) {
-      if (!e.disabled && e.getAttribute('aria-disabled') !== 'true' && e !== ring) set.add(e);
+      if (!e.disabled && e.getAttribute('aria-disabled') !== 'true') set.add(e);
     });
-    // React-style clickable <div>s: outermost element that shows a hand cursor
     var all = root.querySelectorAll(POINTER_SEL);
     for (var i = 0; i < all.length; i++) {
       var e = all[i];
       if (set.has(e)) continue;
-      var cs = getComputedStyle(e);
-      if (cs.cursor !== 'pointer') continue;
+      // React click handler (how the site makes its tiles clickable) …
+      if (hasReactClick(e)) { set.add(e); continue; }
+      // … or the outermost element that shows a hand cursor
+      if (getComputedStyle(e).cursor !== 'pointer') continue;
       var p = e.parentElement;
       if (p && getComputedStyle(p).cursor === 'pointer') continue;
       set.add(e);
     }
-    var list = Array.from(set);
+    set.delete(ring); set.delete(osd);
+
+    // One stop per title: tidy up nested clickables.
+    var kids = new Map();                      // ancestor -> candidate descendants
+    set.forEach(function (e) {
+      for (var a = e.parentElement; a; a = a.parentElement) {
+        if (set.has(a)) {
+          if (!kids.has(a)) kids.set(a, []);
+          kids.get(a).push(e);
+        }
+      }
+    });
+    var drop = new Set();
+    var screenArea = innerWidth * innerHeight;
+    kids.forEach(function (list, a) {
+      var ar = a.getBoundingClientRect(), aArea = ar.width * ar.height || 1, sum = 0;
+      list.forEach(function (k) { var r = k.getBoundingClientRect(); sum += r.width * r.height; });
+      if (sum >= aArea * 0.5 && list.length >= 2) {
+        drop.add(a);                            // a row/group wrapper: keep the items
+      } else if (aArea < screenArea * 0.15) {
+        list.forEach(function (k) { drop.add(k); });  // a title tile: one stop, drop its parts
+      } else {
+        // a big banner: its own buttons (Watch, +Watchlist…) are the stops
+        var explicitKids = list.filter(isExplicit);
+        if (explicitKids.length) drop.add(a);
+        list.forEach(function (k) { if (!isExplicit(k)) drop.add(k); });
+      }
+    });
+    var list = [];
+    set.forEach(function (e) { if (!drop.has(e)) list.push(e); });
     cache = { root: root, list: list };
     cacheAt = now;
     dirty = false;
     return list;
   }
 
+  // Is the element actually visible: not hidden/faded (itself or a parent)
+  // and, when on screen, not covered by a pop-up or panel?
   function usable(e, r, vw, vh) {
     if (!e.isConnected) return false;
     if (r.width < 8 || r.height < 8) return false;
     if (r.width * r.height > vw * vh * 0.6) return false; // page wrappers
     if (r.bottom < -vh * 3 || r.top > vh * 4) return false;
     var cs = getComputedStyle(e);
-    if (cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity) < 0.05) return false;
-    return true;
+    if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+    for (var p = e, i = 0; p && i < 14; p = p.parentElement, i++) {
+      if (parseFloat(getComputedStyle(p).opacity) < 0.05) return false;
+    }
+    return !covered(e, r, vw, vh);
+  }
+
+  function hitOk(e, x, y) {
+    var h = document.elementFromPoint(x, y);
+    if (!h) return true;
+    return h === e || e.contains(h) || h.contains(e);
+  }
+
+  function covered(e, r, vw, vh) {
+    var x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x < 1 || y < 1 || x > vw - 1 || y > vh - 1) return false; // off screen: can't tell
+    if (hitOk(e, x, y)) return false;
+    // allow small badges over the centre: try two more points
+    return !hitOk(e, r.left + r.width * 0.25, r.top + r.height * 0.3) &&
+           !hitOk(e, r.left + r.width * 0.75, r.top + r.height * 0.7);
   }
 
   /* ------------------------------------------------ 4. moving the focus */
@@ -255,9 +335,38 @@
     return true;
   }
 
+  // A pop-up opened over the focused item (or it faded away): forget it so
+  // focus starts again inside whatever is on top now.
+  function validateCur() {
+    if (!cur) return;
+    if (!cur.isConnected) { cur = null; return; }
+    var root = scopeRoot();
+    if ((root !== document && !root.contains(cur)) ||
+        !usable(cur, cur.getBoundingClientRect(), innerWidth, innerHeight)) {
+      saved = cur;            // remember it for when the pop-up closes
+      cur = null;
+    }
+  }
+  var saved = null;
+
+  function restoreFocus() {
+    dirty = true;
+    var vw = innerWidth, vh = innerHeight;
+    var root = scopeRoot();
+    if (saved && saved.isConnected && (root === document || root.contains(saved)) &&
+        usable(saved, saved.getBoundingClientRect(), vw, vh)) {
+      setFocus(saved, null);
+    } else {
+      var f = firstInView();
+      if (f) setFocus(f, null);
+    }
+    saved = null;
+  }
+
   function move(dir, retried) {
     var vw = innerWidth, vh = innerHeight;
-    if (!cur || !cur.isConnected) {
+    validateCur();
+    if (!cur) {
       var f = firstInView();
       if (f) setFocus(f, dir);
       return;
@@ -270,7 +379,7 @@
     var list = collect();
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
-      if (e === cur || e.contains(cur)) continue;
+      if (e === cur || e.contains(cur) || cur.contains(e)) continue;
       var b = e.getBoundingClientRect();
       if (!usable(e, b, vw, vh)) continue;
       var bcx = b.left + b.width / 2, bcy = b.top + b.height / 2;
@@ -327,6 +436,13 @@
     e.dispatchEvent(new MouseEvent('click', o));
     dirty = true;
     setTimeout(function () { burst(600); }, 50);
+    // If the click opened a pop-up/panel, move the focus into it.
+    setTimeout(function () {
+      dirty = true;
+      validateCur();
+      if (!cur && !mainVideo()) { var f = firstInView(); if (f) setFocus(f, null); }
+      place();
+    }, 550);
   }
 
   /* ------------------------------------------------ 6. video player */
@@ -340,7 +456,12 @@
       var r = vids[i].getBoundingClientRect(), a = r.width * r.height;
       if (a > area) { area = a; best = vids[i]; }
     }
-    if (best && area >= innerWidth * innerHeight * 0.5 && best.readyState > 0) return best;
+    if (!best || best.readyState === 0) return null;
+    // Only the real player counts – not trailers that auto-play on the home page.
+    var fs = document.fullscreenElement || document.webkitFullscreenElement;
+    var watchPage = /\/watch(\/|$|\?)/.test(location.pathname) || (fs && fs.contains(best));
+    if (watchPage && area >= innerWidth * innerHeight * 0.5) return best;
+    if (!best.muted && area >= innerWidth * innerHeight * 0.9) return best;
     return null;
   }
 
@@ -398,7 +519,7 @@
       });
       if (best) setFocus(best, null);
       showOsd('Player buttons  ·  BACK to return');
-    }, 120);
+    }, 350);
     armControlsTimeout();
   }
 
@@ -429,7 +550,7 @@
   ['playing', 'pause', 'ended', 'emptied'].forEach(function (t) {
     document.addEventListener(t, function () {
       reportPlaying();
-      if (t === 'playing' && !controls) { ringHidden = true; place(); }
+      if (t === 'playing' && !controls && mainVideo()) { ringHidden = true; place(); }
     }, true);
   });
 
@@ -466,11 +587,21 @@
 
     var v = mainVideo();
     if (v && !controls) { stop(ev); playerKey(k, ev, v); return; }
-    if (controls) armControlsTimeout();
-
     stop(ev);
+    if (controls && v) {
+      // keep the player's buttons on screen while we move between them
+      armControlsTimeout();
+      wakeControls(v);
+      setTimeout(function () { navKey(k, ae); }, 90);
+      return;
+    }
+    navKey(k, ae);
+  }, true);
+
+  function navKey(k, ae) {
     if (k === 'ok') {
-      if (cur && cur.isConnected) {
+      validateCur();
+      if (cur) {
         ringHidden = false;
         activate(cur);
       } else move('down');
@@ -479,7 +610,7 @@
     if (isText(ae)) ae.blur();
     if (ringHidden) { ringHidden = false; place(); if (cur && cur.isConnected) return; }
     move(k);
-  }, true);
+  }
 
   // swallow the matching keyup so the site's own shortcuts don't fire twice
   window.addEventListener('keyup', function (ev) {
@@ -496,23 +627,26 @@
     if (controls) { leaveControls(); return true; }
     var ae = document.activeElement;
     if (isText(ae)) { ae.blur(); return true; }
+    if (mainVideo()) return false;              // leave the player
     var root = scopeRoot();
-    if (root !== document && !(document.fullscreenElement && root === document.fullscreenElement)) {
-      var o = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
-      (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', o));
-      document.dispatchEvent(new KeyboardEvent('keyup', o));
-      // If the dialog is still open, click its close button.
+    if (root === document) return false;        // normal page: go back
+    // A pop-up / panel is open: ask the site to close it.
+    var o = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+    (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', o));
+    document.dispatchEvent(new KeyboardEvent('keyup', o));
+    setTimeout(function () {
+      if (scopeRoot() !== root) { restoreFocus(); return; }
+      var c = root.querySelector('[aria-label*="close" i],[aria-label*="dismiss" i],[aria-label*="back" i],' +
+        '[class*="close" i],[data-testid*="close" i],[data-testid*="back" i]');
+      if (c) activate(c);
       setTimeout(function () {
-        if (scopeRoot() !== root) return;
-        var c = root.querySelector('[aria-label*="close" i],[aria-label*="dismiss" i],[class*="close" i],[data-testid*="close" i]');
-        if (c) activate(c);
-      }, 150);
-      cur = null;
-      dirty = true;
-      setTimeout(function () { var f = firstInView(); if (f) setFocus(f, null); }, 400);
-      return true;
-    }
-    return false;
+        if (scopeRoot() !== root) { restoreFocus(); return; }
+        // Not a closable pop-up (e.g. a full-screen page): go back a page.
+        if (native && native.goBack) native.goBack();
+      }, 350);
+    }, 200);
+    cur = null;
+    return true;
   };
 
   tv.media = function (cmd) {
