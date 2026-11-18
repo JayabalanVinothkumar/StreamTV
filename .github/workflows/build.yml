@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,3 +29,20 @@ jobs:
         with:
           name: StreamTV-apk
           path: app/build/outputs/apk/release/*.apk
+
+      - name: Publish APK as a download
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Stream TV (latest build)
+          make_latest: true
+          files: app/build/outputs/apk/release/app-release.apk
+
+      - name: Keep a copy on the apk branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          mkdir /tmp/out && cp app/build/outputs/apk/release/app-release.apk /tmp/out/StreamTV.apk
+          cd /tmp/out && git init -q -b apk && git add StreamTV.apk
+          git -c user.name=ci -c user.email=ci@local commit -qm "APK ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" apk
