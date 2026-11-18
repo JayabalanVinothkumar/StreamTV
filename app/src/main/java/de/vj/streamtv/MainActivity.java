@@ -23,7 +23,12 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
 import java.io.ByteArrayOutputStream;
+import java.util.HashSet;
+import java.util.Set;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
@@ -95,6 +100,21 @@ public class MainActivity extends Activity {
         cm.setAcceptThirdPartyCookies(web, true);
 
         web.addJavascriptInterface(new Bridge(), "TVNative");
+
+        // Run the TV script before the site's own code on every page, so the
+        // quality and language hooks are in place before the player starts.
+        if (tvScript != null && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            Set<String> origins = new HashSet<>();
+            for (String h : ALLOWED_HOSTS) {
+                origins.add("https://" + h);
+                origins.add("https://*." + h);
+            }
+            try {
+                WebViewCompat.addDocumentStartJavaScript(web, tvScript, origins);
+            } catch (Exception ignored) {
+                // fall back to injecting on page start/finish below
+            }
+        }
         web.setWebViewClient(new ShellClient());
         web.setWebChromeClient(new ShellChromeClient());
         web.requestFocus();

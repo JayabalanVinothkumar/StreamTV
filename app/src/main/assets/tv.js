@@ -85,6 +85,54 @@
     }
   } catch (e) {}
 
+  // Audio languages of the current title, read from the site's own API
+  // responses (settings → audio_language_list → audio_filer).
+  var langInfo = { list: null, prefId: null, path: null };
+  function scanForLangs(text) {
+    if (!text || (text.indexOf('audio_filer') < 0 && text.indexOf('user_language_preference_id') < 0)) return;
+    var j;
+    try { j = JSON.parse(text); } catch (e) { return; }
+    (function walk(o, depth) {
+      if (!o || typeof o !== 'object' || depth > 40) return;
+      if (Array.isArray(o.audio_filer)) {
+        var list = o.audio_filer.filter(function (x) { return x && (x.iso3code || x.iso2code); })
+          .map(function (x) {
+            return { name: x.name || x.title || x.iso3code, iso3code: x.iso3code, iso2code: x.iso2code,
+                     note: x.description || '', raw: x };
+          });
+        if (list.length) { langInfo.list = list; langInfo.path = location.pathname; }
+      }
+      if (o.user_language_preference_id) langInfo.prefId = String(o.user_language_preference_id);
+      for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) walk(o[k], depth + 1);
+    })(j, 0);
+  }
+  try {
+    var ofetch = window.fetch;
+    window.fetch = function (input) {
+      var p = ofetch.apply(this, arguments);
+      try {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (/\/api\//.test(url)) {
+          p.then(function (r) {
+            try { r.clone().text().then(scanForLangs).catch(function () {}); } catch (e) {}
+          }).catch(function () {});
+        }
+      } catch (e) {}
+      return p;
+    };
+  } catch (e) {}
+  try {
+    var oopen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (m, url) {
+      if (/\/api\//.test(String(url || ''))) {
+        this.addEventListener('load', function () {
+          try { if (!this.responseType || this.responseType === 'text') scanForLangs(this.responseText); } catch (e) {}
+        });
+      }
+      return oopen.apply(this, arguments);
+    };
+  } catch (e) {}
+
   // Start at a high (but realistic) bitrate; the player still adapts to the
   // real line speed after that.
   try {
@@ -756,9 +804,9 @@
   function handleKey(k, ev, ae) {
 
     var v = mainVideo();
-    if (v && !controls) { stop(ev); playerKey(k, ev, v); return; }
+    if (v && !controls && !menu) { stop(ev); playerKey(k, ev, v); return; }
     stop(ev);
-    if (controls && v) {
+    if (controls && v && !menu) {
       // keep the player's buttons on screen while we move between them
       armControlsTimeout();
       wakeControls(v);
@@ -802,6 +850,45 @@
     restoreFocus();
   }
   var menuReturn = null;
+  var FALLBACK_LANGS = [
+    ['Hindi', 'hin', 'hi'], ['Tamil', 'tam', 'ta'], ['Telugu', 'tel', 'te'], ['Malayalam', 'mal', 'ml'],
+    ['Kannada', 'kan', 'kn'], ['Bengali', 'ben', 'bn'], ['Marathi', 'mar', 'mr'], ['English', 'eng', 'en']
+  ].map(function (l) { return { name: l[0], iso3code: l[1], iso2code: l[2], note: '' }; });
+
+  function currentLang() {
+    var q = new URLSearchParams(location.search).get('lang');
+    if (q) return q.toLowerCase();
+    var list = langInfo.list || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].raw && (list[i].raw.is_selected || list[i].raw.is_default)) return (list[i].iso3code || '').toLowerCase();
+    }
+    return '';
+  }
+
+  function menuButton(text, selected, onClick) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = (selected ? '✓  ' : '     ') + text;
+    b.style.cssText = 'display:block;width:100%;text-align:left;margin:5px 0;padding:10px 14px;' +
+      'border:0;border-radius:10px;font:inherit;color:#fff;cursor:pointer;white-space:nowrap;' +
+      'background:' + (selected ? '#2d4bff' : '#262a35');
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function menuColumn(title, subtitle) {
+    var col = document.createElement('div');
+    col.style.cssText = 'min-width:250px;max-height:78vh;overflow-y:auto;padding:0 6px';
+    var h = document.createElement('div');
+    h.textContent = title;
+    h.style.cssText = 'font-weight:700;font-size:20px;margin-bottom:2px';
+    var sub = document.createElement('div');
+    sub.textContent = subtitle;
+    sub.style.cssText = 'opacity:.6;font-size:13px;margin-bottom:8px';
+    col.appendChild(h); col.appendChild(sub);
+    return col;
+  }
+
   function openMenu() {
     if (menu) { closeMenu(); return; }
     menuReturn = cur;
@@ -809,34 +896,47 @@
     menu.setAttribute('role', 'dialog');
     menu.setAttribute('aria-modal', 'true');
     menu.style.cssText =
-      'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.55);display:flex;' +
-      'align-items:center;justify-content:center;font:500 18px/1.3 system-ui,sans-serif;color:#fff';
+      'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.6);display:flex;' +
+      'align-items:center;justify-content:center;font:500 16px/1.3 system-ui,sans-serif;color:#fff';
     var box = document.createElement('div');
-    box.style.cssText = 'background:#16181f;border-radius:16px;padding:22px 26px;min-width:360px;' +
-      'box-shadow:0 10px 40px rgba(0,0,0,.6)';
-    var h = document.createElement('div');
-    h.textContent = 'Video quality';
-    h.style.cssText = 'font-weight:700;font-size:22px;margin-bottom:6px';
-    var sub = document.createElement('div');
-    var v = document.querySelector('video');
-    sub.textContent = v && v.videoHeight ? 'Now playing: ' + v.videoHeight + 'p' : 'Applies to the next video';
-    sub.style.cssText = 'opacity:.65;font-size:15px;margin-bottom:14px';
-    box.appendChild(h); box.appendChild(sub);
-    var current = getQuality();
+    box.style.cssText = 'background:#16181f;border-radius:16px;padding:20px 22px;' +
+      'box-shadow:0 10px 40px rgba(0,0,0,.6);max-width:94vw';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:26px;align-items:flex-start';
     var first = null;
+
+    // Video quality
+    var v = document.querySelector('video');
+    var qcol = menuColumn('Video quality',
+      v && v.videoHeight ? 'Now playing: ' + (v.videoHeight >= 2000 ? '4K' : v.videoHeight + 'p') : 'Used for all videos');
+    var current = getQuality();
     QUALITIES.forEach(function (q) {
-      var b = document.createElement('button');
-      b.textContent = (q.id === current.id ? '✓  ' : '     ') + q.label;
-      b.style.cssText = 'display:block;width:100%;text-align:left;margin:6px 0;padding:12px 16px;' +
-        'border:0;border-radius:10px;font:inherit;color:#fff;cursor:pointer;' +
-        'background:' + (q.id === current.id ? '#2d4bff' : '#262a35');
-      b.addEventListener('click', function () { chooseQuality(q); });
-      box.appendChild(b);
+      var b = menuButton(q.label, q.id === current.id, function () { chooseQuality(q); });
+      qcol.appendChild(b);
       if (q.id === current.id) first = b;
     });
+    row.appendChild(qcol);
+
+    // Audio language (watch pages)
+    if (/\/watch(\/|$)/.test(location.pathname)) {
+      var known = langInfo.list && langInfo.path === location.pathname ? langInfo.list : null;
+      var langs = known || FALLBACK_LANGS;
+      var lcol = menuColumn('Audio language', known ? 'Languages of this title' : 'If available for this title');
+      var curLang = currentLang();
+      langs.forEach(function (l) {
+        var sel = curLang && (curLang === (l.iso3code || '').toLowerCase() || curLang === (l.iso2code || '').toLowerCase());
+        var label = l.name + (l.note && /original/i.test(l.note) ? '  (original)' : '');
+        var b = menuButton(label, sel, function () { chooseLanguage(l); });
+        lcol.appendChild(b);
+        if (sel && !first) first = b;
+      });
+      row.appendChild(lcol);
+    }
+
+    box.appendChild(row);
     var note = document.createElement('div');
     note.textContent = 'Hold OK any time to open this menu  ·  BACK to close';
-    note.style.cssText = 'opacity:.5;font-size:13px;margin-top:12px';
+    note.style.cssText = 'opacity:.5;font-size:13px;margin-top:10px';
     box.appendChild(note);
     menu.appendChild(box);
     menu.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeMenu(); });
@@ -845,16 +945,50 @@
     setTimeout(function () { if (first) setFocus(first, null); }, 30);
   }
 
+  function saveResume() {
+    var v = mainVideo();
+    if (!v) return;
+    try {
+      sessionStorage.setItem('streamtv.resume', JSON.stringify(
+        { path: location.pathname, t: v.currentTime, at: Date.now() }));
+    } catch (e) {}
+  }
+
+  function chooseLanguage(l) {
+    menu && menu.remove(); menu = null;
+    // Save it the way JioHotstar does, so it sticks for this title …
+    try {
+      var key = null;
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.indexOf('__VIDEO_PREFERENCE_AUDIO_') === 0) { key = k; break; }
+      }
+      if (key && langInfo.prefId) {
+        var store = JSON.parse(localStorage.getItem(key) || '{}');
+        var arr = Array.isArray(store.value) ? store.value : [];
+        arr = arr.filter(function (e) { return e && e.id !== langInfo.prefId; });
+        var val = Object.assign({}, l.raw || { iso2code: l.iso2code, iso3code: l.iso3code, name: l.name },
+          { is_selected: true });
+        arr.push({ id: langInfo.prefId, value: val, isManual: true, isLive: false });
+        store.value = arr;
+        localStorage.setItem(key, JSON.stringify(store));
+      }
+    } catch (e) {}
+    // … and reopen the video in that language at the same point.
+    saveResume();
+    showOsd('Switching audio to ' + l.name + '…');
+    var u = new URL(location.href);
+    u.searchParams.set('lang', l.iso3code || l.iso2code);
+    setTimeout(function () { location.replace(u.toString()); }, 400);
+  }
+
   function chooseQuality(q) {
     try { localStorage.setItem('streamtv.quality', q.id); } catch (e) {}
     var v = document.querySelector('video');
     menu && menu.remove(); menu = null;
     if (v && mainVideo()) {
       // restart the player with the new quality, at the same point
-      try {
-        sessionStorage.setItem('streamtv.resume', JSON.stringify(
-          { path: location.pathname, t: v.currentTime, at: Date.now() }));
-      } catch (e) {}
+      saveResume();
       showOsd('Switching to ' + q.label.split('  ')[0] + '…');
       setTimeout(function () { location.reload(); }, 400);
     } else {
