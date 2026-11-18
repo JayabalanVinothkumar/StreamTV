@@ -384,9 +384,12 @@
   /* ------------------------------------------------ 4. moving the focus */
 
   var lastByPath = {};
+  var autoFocused = false;   // focus was placed by us, not by a key press
+  function autoFocus(e) { setFocus(e, null); autoFocused = true; }
   function setFocus(e, dir) {
     cur = e;
-    lastByPath[location.pathname] = e;
+    autoFocused = false;
+    if (dir) lastByPath[location.pathname] = e;   // only titles the user moved to
     ringHidden = false;
     try { if (e.tabIndex >= 0 || isText(e)) e.focus({ preventScroll: true }); } catch (x) {}
     var vertical = dir === 'up' || dir === 'down';
@@ -553,11 +556,14 @@
     setTimeout(function () { burst(600); }, 50);
     // If the click opened a pop-up/panel, move the focus into it
     // (checked twice: pop-ups animate in).
-    [550, 1300].forEach(function (ms) {
+    [550, 1300, 2200].forEach(function (ms) {
       setTimeout(function () {
         dirty = true;
         validateCur();
-        if (!cur && !mainVideo()) { var f = firstInView(); if (f) setFocus(f, null); }
+        if ((!cur || autoFocused) && !mainVideo()) {
+          var f = firstInView();
+          if (f && f !== cur) autoFocus(f);
+        }
         place();
       }, ms);
     });
@@ -785,20 +791,21 @@
     cur = null;
     place();
     var path = location.pathname;
+    var remembered = {}; remembered[path] = lastByPath[path];
     [700, 1500, 2600].forEach(function (ms) {
       setTimeout(function () {
         dirty = true;
         validateCur();
-        if (cur || mainVideo() || location.pathname !== path) return;
+        if ((cur && !autoFocused) || mainVideo() || location.pathname !== path) return;
         // back on a page we visited: return to the title we were on
-        var prev = lastByPath[path], root = scopeRoot();
+        var prev = remembered[path], root = scopeRoot();
         if (prev && prev.isConnected && (root === document || root.contains(prev)) &&
             usable(prev, prev.getBoundingClientRect(), innerWidth, innerHeight)) {
-          setFocus(prev, null);
+          if (prev !== cur) autoFocus(prev);
           return;
         }
         var f = firstInView();
-        if (f) setFocus(f, null);
+        if (f && f !== cur) autoFocus(f);
       }, ms);
     });
   };
