@@ -383,8 +383,10 @@
 
   /* ------------------------------------------------ 4. moving the focus */
 
+  var lastByPath = {};
   function setFocus(e, dir) {
     cur = e;
+    lastByPath[location.pathname] = e;
     ringHidden = false;
     try { if (e.tabIndex >= 0 || isText(e)) e.focus({ preventScroll: true }); } catch (x) {}
     var vertical = dir === 'up' || dir === 'down';
@@ -409,6 +411,7 @@
   var PRIMARY = /^(watch|play|resume|continue|start|subscribe to watch)/i;
   function firstInView() {
     var vw = innerWidth, vh = innerHeight, best = null, bs = Infinity;
+    var titlePage = /\/(shows|movies|sports|live|tv)\/[^/]+\/\d+/.test(location.pathname);
     collect().forEach(function (e) {
       var r = e.getBoundingClientRect();
       if (!usable(e, r, vw, vh)) return;
@@ -416,7 +419,7 @@
       var s = r.top * 2 + r.left;
       // On a title page start on its main button (Watch / Play / Resume…)
       var label = (e.getAttribute('aria-label') || e.textContent || '').trim();
-      if (isExplicit(e) && PRIMARY.test(label)) s -= 5000;
+      if (titlePage && isExplicit(e) && PRIMARY.test(label)) s -= 5000;
       if (s < bs) { bs = s; best = e; }
     });
     return best;
@@ -781,11 +784,21 @@
     dirty = true;
     cur = null;
     place();
+    var path = location.pathname;
     [700, 1500, 2600].forEach(function (ms) {
       setTimeout(function () {
         dirty = true;
         validateCur();
-        if (!cur && !mainVideo()) { var f = firstInView(); if (f) setFocus(f, null); }
+        if (cur || mainVideo() || location.pathname !== path) return;
+        // back on a page we visited: return to the title we were on
+        var prev = lastByPath[path], root = scopeRoot();
+        if (prev && prev.isConnected && (root === document || root.contains(prev)) &&
+            usable(prev, prev.getBoundingClientRect(), innerWidth, innerHeight)) {
+          setFocus(prev, null);
+          return;
+        }
+        var f = firstInView();
+        if (f) setFocus(f, null);
       }, ms);
     });
   };
