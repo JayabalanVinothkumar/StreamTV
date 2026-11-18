@@ -14,23 +14,40 @@
 
   /* ------------------------------------------------ 1. highest quality */
 
-  // Best picture the Chromecast can play smoothly: 1080p H.264.
-  // The site's player otherwise tries HEVC / AV1 / Dolby Vision / 4K, which
-  // the TV's web engine can't decode in time: sound plays, picture freezes.
+  // Video quality – chosen in the Stream TV menu (hold OK), saved on the TV.
+  //   1080 (default) : 1080p H.264, smooth on the Chromecast
+  //   4k             : everything the site offers (4K / HEVC / Dolby Vision)
+  //   720 / 480      : lower caps for slow VPN connections
+  var QUALITIES = [
+    { id: '1080', label: 'Full HD 1080p  (recommended)', maxH: 1080, heavy: false },
+    { id: '4k',   label: '4K / HDR  (may stutter)',     maxH: 2160, heavy: true },
+    { id: '720',  label: 'HD 720p',                     maxH: 720,  heavy: false },
+    { id: '480',  label: 'SD 480p  (slow connection)',  maxH: 480,  heavy: false }
+  ];
+  function getQuality() {
+    var id = '1080';
+    try { id = localStorage.getItem('streamtv.quality') || '1080'; } catch (e) {}
+    for (var i = 0; i < QUALITIES.length; i++) if (QUALITIES[i].id === id) return QUALITIES[i];
+    return QUALITIES[0];
+  }
+  var Q = getQuality();
   var HEAVY = /av01|av1|hev1|hvc1|hevc|dvh1|dvhe|dvav|dva1|vp09/i;
+  function codecBlocked(t) { return !Q.heavy && HEAVY.test(t || ''); }
   function heavyCfg(cfg) {
     var v = cfg && cfg.video;
-    return !!(v && (HEAVY.test(v.contentType || '') || (v.height || 0) > 1080 || (v.width || 0) > 1920));
+    if (!v) return false;
+    if (codecBlocked(v.contentType)) return true;
+    return (v.height || 0) > Q.maxH || (v.width || 0) > Math.round(Q.maxH * 16 / 9) + 8;
   }
   try {
     if (window.MediaSource && MediaSource.isTypeSupported) {
       var its = MediaSource.isTypeSupported.bind(MediaSource);
-      MediaSource.isTypeSupported = function (t) { return HEAVY.test(t || '') ? false : its(t); };
+      MediaSource.isTypeSupported = function (t) { return codecBlocked(t) ? false : its(t); };
     }
   } catch (e) {}
   try {
     var cpt = HTMLMediaElement.prototype.canPlayType;
-    HTMLMediaElement.prototype.canPlayType = function (t) { return HEAVY.test(t || '') ? '' : cpt.call(this, t); };
+    HTMLMediaElement.prototype.canPlayType = function (t) { return codecBlocked(t) ? '' : cpt.call(this, t); };
   } catch (e) {}
   try {
     var mc = navigator.mediaCapabilities;
@@ -55,7 +72,7 @@
             var n = Object.assign({}, c);
             if (n.videoCapabilities) {
               n.videoCapabilities = n.videoCapabilities.filter(function (v) {
-                return !HEAVY.test(v.contentType || '');
+                return !codecBlocked(v.contentType);
               });
               if (!n.videoCapabilities.length) return;
             }
@@ -72,7 +89,7 @@
   // real line speed after that.
   try {
     var conn = {
-      downlink: 25, downlinkMax: Infinity, effectiveType: '4g', rtt: 50,
+      downlink: Q.maxH >= 2160 ? 60 : Q.maxH >= 1080 ? 25 : Q.maxH >= 720 ? 8 : 3, downlinkMax: Infinity, effectiveType: '4g', rtt: 50,
       saveData: false, type: 'ethernet', onchange: null,
       addEventListener: function () {}, removeEventListener: function () {},
       dispatchEvent: function () { return true; }
@@ -82,17 +99,18 @@
     });
   } catch (e) {}
 
-  // Report a 1080p screen: the full-HD ladder, never 4K.
+  // Report a screen that matches the chosen quality.
   try {
+    var SW = Math.round(Q.maxH * 16 / 9), SH = Q.maxH;
     ['width', 'availWidth'].forEach(function (k) {
-      Object.defineProperty(Screen.prototype, k, { get: function () { return 1920; }, configurable: true });
+      Object.defineProperty(Screen.prototype, k, { get: function () { return SW; }, configurable: true });
     });
     ['height', 'availHeight'].forEach(function (k) {
-      Object.defineProperty(Screen.prototype, k, { get: function () { return 1080; }, configurable: true });
+      Object.defineProperty(Screen.prototype, k, { get: function () { return SH; }, configurable: true });
     });
   } catch (e) {}
 
-  var HIGH_BW = 15e6; // 15 Mbit/s starting estimate (1080p)
+  var HIGH_BW = Q.maxH >= 2160 ? 40e6 : Q.maxH >= 1080 ? 15e6 : Q.maxH >= 720 ? 6e6 : 2.5e6;
 
   function boostPlayers() {
     // Shaka Player (if the site exposes it)
@@ -705,6 +723,7 @@
 
   function stop(ev) { ev.preventDefault(); ev.stopImmediatePropagation(); }
 
+  var okDownAt = 0, okLong = false;
   window.addEventListener('keydown', function (ev) {
     if (!ev.isTrusted) return;
     var k = keyName(ev);
@@ -713,6 +732,28 @@
 
     // Typing in a search box: let left/right move the cursor and OK submit.
     if (isText(ae) && (k === 'left' || k === 'right' || k === 'ok')) return;
+
+    // OK acts when released; holding it opens the Stream TV menu.
+    if (k === 'ok') {
+      stop(ev);
+      if (!ev.repeat) { okDownAt = performance.now(); okLong = false; return; }
+      if (!okLong && okDownAt && performance.now() - okDownAt > 650) {
+        okLong = true;
+        openMenu();
+      }
+      return;
+    }
+    handleKey(k, ev, ae);
+  }, true);
+
+  function okReleased(ev) {
+    var wasLong = okLong;
+    okDownAt = 0; okLong = false;
+    if (wasLong) return;
+    handleKey('ok', ev, document.activeElement);
+  }
+
+  function handleKey(k, ev, ae) {
 
     var v = mainVideo();
     if (v && !controls) { stop(ev); playerKey(k, ev, v); return; }
@@ -725,7 +766,7 @@
       return;
     }
     navKey(k, ae);
-  }, true);
+  }
 
   function navKey(k, ae) {
     if (k === 'ok') {
@@ -747,9 +788,226 @@
     if (!k) return;
     if (isText(document.activeElement) && (k === 'left' || k === 'right' || k === 'ok')) return;
     stop(ev);
+    if (k === 'ok' && ev.isTrusted && okDownAt) okReleased(ev);
   }, true);
 
-  /* ------------------------------------------------ 8. calls from the app */
+  /* ------------------------------------------------ 8. Stream TV menu */
+
+  var menu = null;
+  function closeMenu() {
+    if (!menu) return;
+    menu.remove();
+    menu = null;
+    saved = menuReturn;
+    restoreFocus();
+  }
+  var menuReturn = null;
+  function openMenu() {
+    if (menu) { closeMenu(); return; }
+    menuReturn = cur;
+    menu = document.createElement('div');
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-modal', 'true');
+    menu.style.cssText =
+      'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.55);display:flex;' +
+      'align-items:center;justify-content:center;font:500 18px/1.3 system-ui,sans-serif;color:#fff';
+    var box = document.createElement('div');
+    box.style.cssText = 'background:#16181f;border-radius:16px;padding:22px 26px;min-width:360px;' +
+      'box-shadow:0 10px 40px rgba(0,0,0,.6)';
+    var h = document.createElement('div');
+    h.textContent = 'Video quality';
+    h.style.cssText = 'font-weight:700;font-size:22px;margin-bottom:6px';
+    var sub = document.createElement('div');
+    var v = document.querySelector('video');
+    sub.textContent = v && v.videoHeight ? 'Now playing: ' + v.videoHeight + 'p' : 'Applies to the next video';
+    sub.style.cssText = 'opacity:.65;font-size:15px;margin-bottom:14px';
+    box.appendChild(h); box.appendChild(sub);
+    var current = getQuality();
+    var first = null;
+    QUALITIES.forEach(function (q) {
+      var b = document.createElement('button');
+      b.textContent = (q.id === current.id ? '✓  ' : '     ') + q.label;
+      b.style.cssText = 'display:block;width:100%;text-align:left;margin:6px 0;padding:12px 16px;' +
+        'border:0;border-radius:10px;font:inherit;color:#fff;cursor:pointer;' +
+        'background:' + (q.id === current.id ? '#2d4bff' : '#262a35');
+      b.addEventListener('click', function () { chooseQuality(q); });
+      box.appendChild(b);
+      if (q.id === current.id) first = b;
+    });
+    var note = document.createElement('div');
+    note.textContent = 'Hold OK any time to open this menu  ·  BACK to close';
+    note.style.cssText = 'opacity:.5;font-size:13px;margin-top:12px';
+    box.appendChild(note);
+    menu.appendChild(box);
+    menu.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeMenu(); });
+    document.body.appendChild(menu);
+    dirty = true;
+    setTimeout(function () { if (first) setFocus(first, null); }, 30);
+  }
+
+  function chooseQuality(q) {
+    try { localStorage.setItem('streamtv.quality', q.id); } catch (e) {}
+    var v = document.querySelector('video');
+    menu && menu.remove(); menu = null;
+    if (v && mainVideo()) {
+      // restart the player with the new quality, at the same point
+      try {
+        sessionStorage.setItem('streamtv.resume', JSON.stringify(
+          { path: location.pathname, t: v.currentTime, at: Date.now() }));
+      } catch (e) {}
+      showOsd('Switching to ' + q.label.split('  ')[0] + '…');
+      setTimeout(function () { location.reload(); }, 400);
+    } else {
+      showOsd('Quality: ' + q.label.split('  ')[0]);
+      location.reload();
+    }
+  }
+
+  // Back at the same point after a quality switch
+  (function resumeAfterSwitch() {
+    var r = null;
+    try { r = JSON.parse(sessionStorage.getItem('streamtv.resume') || 'null'); } catch (e) {}
+    if (!r || r.path !== location.pathname || Date.now() - r.at > 120000) return;
+    var done = false;
+    function tryResume() {
+      var v = mainVideo();
+      if (done || !v || !(v.duration > 0)) return;
+      done = true;
+      try { sessionStorage.removeItem('streamtv.resume'); } catch (e) {}
+      if (Math.abs(v.currentTime - r.t) > 5) v.currentTime = r.t;
+    }
+    ['loadedmetadata', 'playing', 'canplay'].forEach(function (t) {
+      document.addEventListener(t, function () { setTimeout(tryResume, 300); }, true);
+    });
+  })();
+
+  // Show the real resolution when a video starts or the quality changes
+  var shownH = 0, firstHint = true;
+  document.addEventListener('resize', function (ev) {
+    var v = ev.target;
+    if (!v || v.tagName !== 'VIDEO' || !v.videoHeight || v !== mainVideo()) return;
+    if (v.videoHeight === shownH) return;
+    shownH = v.videoHeight;
+    var p = v.videoHeight >= 2000 ? '4K' : v.videoHeight + 'p';
+    showOsd('Playing in ' + p + (firstHint ? '  ·  hold OK for quality' : ''));
+    firstHint = false;
+  }, true);
+
+  /* ------------------------------------------------ 9. jump to last episode */
+
+  var EP_RE = /\bS\d+\s*E\d+\b|\bEpisode\s+\d+\b|\bEp\.?\s*\d+\b/i;
+  var MORE_RE = /^(view|load|show|see)\s+(more|all)|more episodes/i;
+
+  function textOf(e) { return (e.textContent || '').replace(/\s+/g, ' ').trim(); }
+
+  function findEpisodesTab(root) {
+    var els = root.querySelectorAll('button,[role=tab],a,div,span,p');
+    for (var i = 0; i < els.length; i++) {
+      var e = els[i];
+      if (e.children.length > 2) continue;
+      if (textOf(e) !== 'Episodes') continue;
+      var r = e.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) return e.closest('button,[role=tab],a') || e;
+    }
+    return null;
+  }
+
+  function episodeCards(root) {
+    var out = [];
+    collect().forEach(function (e) {
+      if (root !== document && !root.contains(e)) return;
+      if (EP_RE.test(textOf(e)) && !MORE_RE.test(textOf(e))) out.push(e);
+    });
+    return out;
+  }
+
+  function moreButton(root) {
+    var bs = root.querySelectorAll('button,[role=button],a,div,span');
+    for (var i = bs.length - 1; i >= 0; i--) {
+      var b = bs[i], t = textOf(b);
+      if (t.length > 30 || !MORE_RE.test(t)) continue;
+      if (/view all/i.test(t) && !b.closest('[data-testid*="episode" i],[class*="episode" i]')) continue;
+      var r = b.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) return b.closest('button,[role=button],a') || b;
+    }
+    return null;
+  }
+
+  function seasonChips(root) {
+    var out = [];
+    root.querySelectorAll('button,[role=tab],[role=option],li,a,div,span').forEach(function (e) {
+      if (e.children.length > 2) return;
+      if (/^Season\s+\d+$/i.test(textOf(e))) out.push(e.closest('button,[role=tab],[role=option],li,a') || e);
+    });
+    return out;
+  }
+
+  var lastEpBusy = false;
+  function goToLastEpisode() {
+    if (lastEpBusy) return;
+    lastEpBusy = true;
+    var root = scopeRoot();
+    var chips = seasonChips(root);
+    var startDelay = 0;
+    if (chips.length > 1) {                       // open the latest season first
+      var nums = chips.map(function (c) { return parseInt(textOf(c).replace(/\D+/g, ''), 10) || 0; });
+      var last = chips[nums.indexOf(Math.max.apply(null, nums))];
+      activate(last);
+      startDelay = 1500;
+    }
+    var rounds = 0, lastCount = -1, stuck = 0;
+    function step() {
+      dirty = true;
+      var cards = episodeCards(root);
+      var more = moreButton(root);
+      showOsd('Loading episodes…  ' + cards.length);
+      if (more && rounds < 400 && stuck < 6) {
+        if (cards.length === lastCount) stuck++; else stuck = 0;
+        lastCount = cards.length;
+        rounds++;
+        more.click();
+        setTimeout(step, 700);
+        return;
+      }
+      lastEpBusy = false;
+      if (!cards.length) { showOsd('No episode list on this page'); return; }
+      var lastCard = cards[cards.length - 1];
+      setFocus(lastCard, 'down');
+      showOsd('Last episode  ·  ' + cards.length + ' loaded');
+    }
+    setTimeout(step, startDelay);
+  }
+
+  // Put a "Last episode" button next to the Episodes tab of a series.
+  var lastEpBtn = null;
+  function ensureLastEpButton() {
+    if (!/\/(shows|tv)\/[^/]+\/\d+/.test(location.pathname) || mainVideo()) {
+      if (lastEpBtn) { lastEpBtn.remove(); lastEpBtn = null; }
+      return;
+    }
+    var root = scopeRoot();
+    var tab = findEpisodesTab(root === document ? document : root);
+    if (!tab) { if (lastEpBtn) { lastEpBtn.remove(); lastEpBtn = null; } return; }
+    if (lastEpBtn && lastEpBtn.isConnected && tab.parentElement &&
+        tab.parentElement.contains(lastEpBtn)) return;
+    if (lastEpBtn) lastEpBtn.remove();
+    lastEpBtn = document.createElement('button');
+    lastEpBtn.type = 'button';
+    lastEpBtn.textContent = '⏭  Last episode';
+    lastEpBtn.setAttribute('aria-label', 'Go to last episode');
+    lastEpBtn.style.cssText = 'margin-left:18px;padding:6px 14px;border-radius:18px;border:0;' +
+      'background:rgba(255,255,255,.14);color:#fff;font:600 14px/1.2 system-ui,sans-serif;' +
+      'cursor:pointer;white-space:nowrap;align-self:center;flex:0 0 auto';
+    lastEpBtn.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      goToLastEpisode();
+    }, true);
+    tab.insertAdjacentElement('afterend', lastEpBtn);
+    dirty = true;
+  }
+  setInterval(ensureLastEpButton, 1200);
+
+  /* ------------------------------------------------ 10. calls from the app */
 
   // BACK: returns true if handled here, false to let the app go back a page.
   tv.back = function () {
