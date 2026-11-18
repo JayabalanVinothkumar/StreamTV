@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'de.vj.streamtv'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'de.vj.streamtv'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        // Fixed key kept in the repo so new builds install over old ones
+        // without uninstalling (and without losing your login).
+        release {
+            storeFile file('release.keystore')
+            storePassword 'streamtv123'
+            keyAlias 'streamtv'
+            keyPassword 'streamtv123'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
