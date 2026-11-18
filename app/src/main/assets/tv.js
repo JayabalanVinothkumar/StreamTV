@@ -14,11 +14,65 @@
 
   /* ------------------------------------------------ 1. highest quality */
 
-  // Adaptive players start at the bitrate they think the line can carry.
-  // Report a fast, unmetered connection so they start (and stay) at the top.
+  // Best picture the Chromecast can play smoothly: 1080p H.264.
+  // The site's player otherwise tries HEVC / AV1 / Dolby Vision / 4K, which
+  // the TV's web engine can't decode in time: sound plays, picture freezes.
+  var HEAVY = /av01|av1|hev1|hvc1|hevc|dvh1|dvhe|dvav|dva1|vp09/i;
+  function heavyCfg(cfg) {
+    var v = cfg && cfg.video;
+    return !!(v && (HEAVY.test(v.contentType || '') || (v.height || 0) > 1080 || (v.width || 0) > 1920));
+  }
+  try {
+    if (window.MediaSource && MediaSource.isTypeSupported) {
+      var its = MediaSource.isTypeSupported.bind(MediaSource);
+      MediaSource.isTypeSupported = function (t) { return HEAVY.test(t || '') ? false : its(t); };
+    }
+  } catch (e) {}
+  try {
+    var cpt = HTMLMediaElement.prototype.canPlayType;
+    HTMLMediaElement.prototype.canPlayType = function (t) { return HEAVY.test(t || '') ? '' : cpt.call(this, t); };
+  } catch (e) {}
+  try {
+    var mc = navigator.mediaCapabilities;
+    if (mc && mc.decodingInfo) {
+      var di = mc.decodingInfo.bind(mc);
+      mc.decodingInfo = function (cfg) {
+        if (heavyCfg(cfg)) {
+          return Promise.resolve({ supported: false, smooth: false, powerEfficient: false,
+                                   keySystemAccess: null, configuration: cfg });
+        }
+        return di(cfg);
+      };
+    }
+  } catch (e) {}
+  try {
+    if (navigator.requestMediaKeySystemAccess) {
+      var rmk = navigator.requestMediaKeySystemAccess.bind(navigator);
+      navigator.requestMediaKeySystemAccess = function (ks, configs) {
+        try {
+          var kept = [];
+          (configs || []).forEach(function (c) {
+            var n = Object.assign({}, c);
+            if (n.videoCapabilities) {
+              n.videoCapabilities = n.videoCapabilities.filter(function (v) {
+                return !HEAVY.test(v.contentType || '');
+              });
+              if (!n.videoCapabilities.length) return;
+            }
+            kept.push(n);
+          });
+          if (kept.length) configs = kept;
+        } catch (e) {}
+        return rmk(ks, configs);
+      };
+    }
+  } catch (e) {}
+
+  // Start at a high (but realistic) bitrate; the player still adapts to the
+  // real line speed after that.
   try {
     var conn = {
-      downlink: 100, downlinkMax: Infinity, effectiveType: '4g', rtt: 20,
+      downlink: 25, downlinkMax: Infinity, effectiveType: '4g', rtt: 50,
       saveData: false, type: 'ethernet', onchange: null,
       addEventListener: function () {}, removeEventListener: function () {},
       dispatchEvent: function () { return true; }
@@ -28,21 +82,17 @@
     });
   } catch (e) {}
 
-  // Report the TV's real pixel size (1920x1080 or more) so the player
-  // does not cap the resolution to the small CSS viewport.
+  // Report a 1080p screen: the full-HD ladder, never 4K.
   try {
-    var dpr = window.devicePixelRatio || 1;
-    var W = Math.max(1920, Math.round(screen.width * dpr));
-    var H = Math.max(1080, Math.round(screen.height * dpr));
     ['width', 'availWidth'].forEach(function (k) {
-      Object.defineProperty(Screen.prototype, k, { get: function () { return W; }, configurable: true });
+      Object.defineProperty(Screen.prototype, k, { get: function () { return 1920; }, configurable: true });
     });
     ['height', 'availHeight'].forEach(function (k) {
-      Object.defineProperty(Screen.prototype, k, { get: function () { return H; }, configurable: true });
+      Object.defineProperty(Screen.prototype, k, { get: function () { return 1080; }, configurable: true });
     });
   } catch (e) {}
 
-  var HIGH_BW = 80e6; // 80 Mbit/s starting estimate
+  var HIGH_BW = 15e6; // 15 Mbit/s starting estimate (1080p)
 
   function boostPlayers() {
     // Shaka Player (if the site exposes it)
@@ -190,7 +240,13 @@
     return layer || document;
   }
 
+  var CLICK_EVT = /^(click|mousedown|mouseup|pointerdown|pointerup)(true|false)$/;
   function hasReactClick(e) {
+    // Preact (used by JioHotstar) keeps its listeners in el.l
+    var l = e.l;
+    if (l && typeof l === 'object') {
+      for (var n in l) if (CLICK_EVT.test(n)) return true;
+    }
     var keys = Object.keys(e);
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
@@ -229,6 +285,9 @@
       set.add(e);
     }
     set.delete(ring); set.delete(osd);
+    // Row scroll arrows sit on top of the first/last tile: never stop on them,
+    // the focus pages the row itself.
+    set.forEach(function (e) { if (isRowArrow(e)) set.delete(e); });
 
     // One stop per title: tidy up nested clickables.
     var kids = new Map();                      // ancestor -> candidate descendants
@@ -279,10 +338,38 @@
     return !covered(e, r, vw, vh);
   }
 
+  function isRowArrow(e) {
+    var c = (typeof e.className === 'string') ? e.className : '';
+    return /swiper-button-(next|prev)|carousel-(next|prev)|arrow-(left|right)/i.test(c);
+  }
+
   function hitOk(e, x, y) {
-    var h = document.elementFromPoint(x, y);
+    var hs = document.elementsFromPoint(x, y), h = null;
+    for (var i = 0; i < hs.length; i++) {
+      if (hs[i] === ring || hs[i] === osd || isRowArrow(hs[i])) continue;
+      h = hs[i]; break;
+    }
     if (!h) return true;
     return h === e || e.contains(h) || h.contains(e);
+  }
+
+  // --- rows built with Swiper: tiles past the edge are paged in by its arrows
+  function rowOf(e) { return e.closest ? e.closest('.swiper-container,.swiper') : null; }
+  function rowArrow(row, dir) {
+    var b = row && row.querySelector(dir === 'right' ? '.swiper-button-next' : '.swiper-button-prev');
+    if (!b || b.disabled || /disabled/.test(b.className)) return null;
+    return b;
+  }
+  function pageRowTo(e, tries) {
+    var row = rowOf(e);
+    if (!row || !e.isConnected) return;
+    var r = e.getBoundingClientRect(), rr = row.getBoundingClientRect();
+    var dir = r.right > rr.right + 2 ? 'right' : (r.left < rr.left - 2 ? 'left' : null);
+    if (!dir) { burst(500); return; }
+    var b = rowArrow(row, dir);
+    if (!b) return;
+    b.click();
+    if ((tries || 0) < 8) setTimeout(function () { pageRowTo(e, (tries || 0) + 1); }, 380);
   }
 
   function covered(e, r, vw, vh) {
@@ -305,6 +392,7 @@
       e.scrollIntoView({ block: vertical ? 'center' : 'nearest', inline: 'nearest', behavior: 'smooth' });
     } catch (x) { try { e.scrollIntoView(false); } catch (y) {} }
     burst(700);
+    if (dir === 'left' || dir === 'right') setTimeout(function () { pageRowTo(e, 0); }, 60);
   }
 
   function firstInView() {
@@ -407,6 +495,15 @@
       off = Math.abs(bcx - acx);
       s = main * 1.2 + gap * 1.5 + off * 0.3;
       if (s < bs) { bs = s; best = e; }
+    }
+    if (!best && horiz && !retried) {
+      var arrow = rowArrow(rowOf(cur), dir);
+      if (arrow) {                         // more titles in this row: page it
+        arrow.click();
+        dirty = true;
+        setTimeout(function () { move(dir, true); }, 420);
+        return;
+      }
     }
     best = best || far;
     if (best) { setFocus(best, dir); return; }
