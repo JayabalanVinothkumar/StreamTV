@@ -770,7 +770,9 @@
     '<div data-r="top" style="display:flex;align-items:center;gap:14px;margin-bottom:10px">' +
       '<span data-r="icon" style="font-size:22px;width:26px;text-align:center"></span>' +
       '<span data-r="live" style="display:none;background:#e50914;border-radius:4px;padding:2px 8px;font-size:14px;letter-spacing:.5px">LIVE</span>' +
-      '<span data-r="target" style="font-size:20px"></span>' +
+      '<span data-r="kind" style="display:none;background:#2d4bff;border-radius:4px;padding:2px 8px;font-size:14px;letter-spacing:.5px;white-space:nowrap"></span>' +
+      '<span data-r="title" style="font-size:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto;opacity:.95"></span>' +
+      '<span data-r="target" style="font-size:20px;white-space:nowrap;margin-left:auto"></span>' +
     '</div>' +
     '<div style="display:flex;align-items:center;gap:16px">' +
       '<span data-r="left" style="min-width:76px;font-variant-numeric:tabular-nums"></span>' +
@@ -798,6 +800,36 @@
     return { live: live, lo: lo, hi: hi };
   }
 
+  // What is playing, from the page title and address:
+  //   "Watch Yeh Rishta Kya Kehlata Hai S68 Episode 2208 on JioHotstar"
+  //   /in/shows/<show>/<id>/<episode-title>/<id>/watch
+  var titleCache = { key: '', info: null };
+  function slugToTitle(slug) {
+    return decodeURIComponent(slug || '').replace(/-/g, ' ')
+      .replace(/\b([a-z])/g, function (m) { return m.toUpperCase(); });
+  }
+  function titleInfo() {
+    var key = location.pathname + '|' + document.title;
+    if (titleCache.key === key) return titleCache.info;
+    var t = (document.title || '').replace(/^\s*Watch\s+/i, '')
+      .replace(/\s+(on|-|\|)\s+(Jio)?Hotstar.*$/i, '').trim();
+    var parts = location.pathname.split('/').filter(Boolean);   // in, shows, slug, id, ep-slug, id, watch
+    var info = { kind: '', title: t };
+    var m = t.match(/^(.*?)\s+S(\d+)\s*(?:E|Episode)\s*(\d+)\b/i);
+    if (m || parts[1] === 'shows') {
+      var epTitle = parts.length >= 7 ? slugToTitle(parts[4]) : '';
+      var show = m ? m[1] : (parts[2] ? slugToTitle(parts[2]) : t);
+      info.kind = m ? 'S' + m[2] + ' E' + m[3] : 'EPISODE';
+      info.title = show + (epTitle ? '  ·  ' + epTitle : '');
+    } else if (parts[1] === 'movies') {
+      info.kind = 'MOVIE';
+    } else if (parts[1] === 'sports') {
+      info.kind = 'SPORTS';
+    }
+    titleCache = { key: key, info: info };
+    return info;
+  }
+
   function renderBar(v) {
     var g = range(v), span = Math.max(1, g.hi - g.lo);
     var now = v.currentTime, target = pendingSeek != null ? pendingSeek : null;
@@ -815,6 +847,11 @@
     part('ghost').style.left = pct(now);
     part('ghost').style.display = target != null ? 'block' : 'none';
     part('icon').textContent = v.paused ? '❚❚' : '▶';
+
+    var ti = titleInfo();
+    part('title').textContent = ti.title || '';
+    part('kind').textContent = ti.kind;
+    part('kind').style.display = ti.kind && !g.live ? 'inline-block' : 'none';
 
     var behind = g.hi - pos;
     if (g.live) {
