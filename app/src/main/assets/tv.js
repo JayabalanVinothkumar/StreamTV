@@ -657,19 +657,55 @@
 
   /* ------------------------------------------------ 5. clicking */
 
-  function activate(e) {
-    if (isText(e)) { e.focus(); try { e.click(); } catch (x) {} return; }
+  // Where a real click would land: the innermost part of the item at its
+  // centre (skipping row arrows/overlays lying on top), so the click passes
+  // through every handler from there up to the item itself.
+  function clickTarget(e) {
     var r = e.getBoundingClientRect();
-    var o = { bubbles: true, cancelable: true, view: window, button: 0,
-              clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    var x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x > 0 && y > 0 && x < innerWidth && y < innerHeight) {
+      var hs = document.elementsFromPoint(x, y);
+      for (var i = 0; i < hs.length; i++) {
+        if (hs[i] === e || e.contains(hs[i])) return { el: hs[i], x: x, y: y };
+      }
+    }
+    // off screen or covered: use the innermost clickable part inside it
+    var inner = e.querySelector('[data-testid="action"],a[href],button,[role=button]');
+    return { el: inner || e, x: x, y: y };
+  }
+
+  function fireClick(t, x, y) {
+    var o = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1,
+              clientX: x, clientY: y };
     try {
       var po = Object.assign({ pointerId: 1, pointerType: 'mouse', isPrimary: true }, o);
-      e.dispatchEvent(new PointerEvent('pointerdown', po));
-      e.dispatchEvent(new MouseEvent('mousedown', o));
-      e.dispatchEvent(new PointerEvent('pointerup', po));
-      e.dispatchEvent(new MouseEvent('mouseup', o));
+      t.dispatchEvent(new PointerEvent('pointerdown', po));
+      t.dispatchEvent(new MouseEvent('mousedown', o));
+      t.dispatchEvent(new PointerEvent('pointerup', po));
+      t.dispatchEvent(new MouseEvent('mouseup', o));
+    } catch (x2) {}
+    t.dispatchEvent(new MouseEvent('click', o));
+  }
+
+  function activate(e) {
+    if (isText(e)) { e.focus(); try { e.click(); } catch (x) {} return; }
+    var t = clickTarget(e);
+    var before = location.href, mutated = false;
+    var mo = null;
+    try {
+      mo = new MutationObserver(function () { mutated = true; });
+      mo.observe(document.body, { childList: true, subtree: true });
     } catch (x) {}
-    e.dispatchEvent(new MouseEvent('click', o));
+    fireClick(t.el, t.x, t.y);
+    // Nothing happened? Try once more on the item's own link / action part.
+    setTimeout(function () {
+      if (mo) mo.disconnect();
+      if (location.href !== before || mutated || !e.isConnected) return;
+      var alt = e.matches('a[href],[data-testid="action"]') ? e :
+        e.querySelector('a[href],[data-testid="action"],button,[role=button]');
+      if (alt && alt !== t.el) fireClick(alt, t.x, t.y);
+      else if (e.tagName === 'A' && e.href) location.href = e.href;
+    }, 700);
     dirty = true;
     setTimeout(function () { burst(600); }, 50);
     // If the click opened a pop-up/panel, move the focus into it
@@ -963,7 +999,7 @@
     if (k === 'ok') {
       stop(ev);
       if (!ev.repeat) { okDownAt = performance.now(); okLong = false; return; }
-      if (!okLong && okDownAt && performance.now() - okDownAt > 650) {
+      if (!okLong && okDownAt && performance.now() - okDownAt > 900) {
         okLong = true;
         openMenu();
       }
@@ -1014,7 +1050,7 @@
     if (!k) return;
     if (isText(document.activeElement) && (k === 'left' || k === 'right' || k === 'ok')) return;
     stop(ev);
-    if (k === 'ok' && ev.isTrusted && okDownAt) okReleased(ev);
+    if (k === 'ok' && ev.isTrusted) okReleased(ev);
   }, true);
 
   /* ------------------------------------------------ 8. Stream TV menu */
