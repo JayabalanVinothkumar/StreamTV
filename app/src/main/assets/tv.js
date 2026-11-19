@@ -221,6 +221,7 @@
     if (!p) return;
     if (ring.parentNode !== p) p.appendChild(ring);
     if (osd.parentNode !== p) p.appendChild(osd);
+    if (typeof bar !== 'undefined' && bar && bar.parentNode && bar.parentNode !== p) p.appendChild(bar);
   }
   document.addEventListener('fullscreenchange', function () { attachOverlays(); place(); }, true);
 
@@ -353,7 +354,9 @@
     set.delete(ring); set.delete(osd);
     // Row scroll arrows sit on top of the first/last tile: never stop on them,
     // the focus pages the row itself.
-    set.forEach(function (e) { if (isRowArrow(e)) set.delete(e); });
+    set.forEach(function (e) {
+      if (isRowArrow(e) || isRowHeader(e)) set.delete(e);
+    });
 
     // One stop per title: tidy up nested clickables.
     var kids = new Map();                      // ancestor -> candidate descendants
@@ -404,6 +407,14 @@
     return !covered(e, r, vw, vh);
   }
 
+  // Row titles and "View All" links sit above each row on the left; stopping
+  // on them made Down jump sideways. Rows are reached through their titles.
+  function isRowHeader(e) {
+    var wrap = e.closest && e.closest('[data-testid="tray-container-base-wrapper"]');
+    if (!wrap) return false;
+    return !e.closest('[data-testid="tray-container"]');
+  }
+
   function isRowArrow(e) {
     var c = (typeof e.className === 'string') ? e.className : '';
     return /swiper-button-(next|prev)|carousel-(next|prev)|arrow-(left|right)/i.test(c);
@@ -449,6 +460,39 @@
 
   /* ------------------------------------------------ 4. moving the focus */
 
+  // Page scrolling like a TV app: the page only moves when the focused item
+  // would leave the screen, and then just enough to show it with its row
+  // title, near the top. Near the top of the page it snaps back to the top.
+  var stickyX = null;
+  function scrollerFor(e) {
+    for (var p = e.parentElement; p && p !== document.body; p = p.parentElement) {
+      var cs = getComputedStyle(p);
+      if (/(auto|scroll)/.test(cs.overflowY) && p.scrollHeight > p.clientHeight + 4) return p;
+    }
+    return null;
+  }
+  function revealVertically(e, dir) {
+    var r = e.getBoundingClientRect(), vh = innerHeight;
+    var topGap = Math.min(110, vh * 0.2), bottomGap = 24;
+    var sc = scrollerFor(e);
+    var delta = 0;
+    if (r.bottom > vh - bottomGap || r.top < topGap * 0.5) {
+      delta = r.top - topGap;                      // put its row near the top
+    } else if (dir === 'up' && window.scrollY > 0 && r.bottom + window.scrollY < vh - bottomGap) {
+      delta = -window.scrollY;                     // back at the top area: show it whole
+    }
+    if (!delta) return;
+    if (sc) {
+      var target = sc.scrollTop + delta;
+      sc.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+      return;
+    }
+    var y = window.scrollY + delta;
+    // anything that fits on the first screen: show the page from the top
+    if (r.bottom + window.scrollY < vh - bottomGap || y < vh * 0.35) y = 0;
+    window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+  }
+
   var lastByPath = {};
   var autoFocused = false;   // focus was placed by us, not by a key press
   function autoFocus(e) { setFocus(e, null); autoFocused = true; }
@@ -463,20 +507,15 @@
         document.activeElement.blur();   // clear the site's own outline from the last item
       }
     } catch (x) {}
-    var vertical = dir === 'up' || dir === 'down';
+    if (dir === 'left' || dir === 'right') {
+      var rr = e.getBoundingClientRect();
+      stickyX = rr.left + rr.width / 2;           // remember the column
+    }
     var row = rowOf(e);
-    if (row) {
-      // Swiper rows move with their own arrows; native scrolling would
-      // knock them out of place, so only scroll the page vertically.
-      row.scrollLeft = 0;
-      var r = e.getBoundingClientRect(), vh = innerHeight;
-      if (vertical || r.top < 0 || r.bottom > vh) {
-        window.scrollBy({ top: (r.top + r.height / 2) - vh / 2, behavior: 'smooth' });
-      }
-    } else {
-      try {
-        e.scrollIntoView({ block: vertical ? 'center' : 'nearest', inline: 'nearest', behavior: 'smooth' });
-      } catch (x) { try { e.scrollIntoView(false); } catch (y) {} }
+    if (row) row.scrollLeft = 0;                   // Swiper rows page with their arrows
+    revealVertically(e, dir);
+    if (!row && (dir === 'left' || dir === 'right')) {
+      try { e.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }); } catch (x) {}
     }
     burst(700);
     if (dir === 'left' || dir === 'right') setTimeout(function () { pageRowTo(e, 0); }, 60);
@@ -582,11 +621,19 @@
       if (dir === 'down' && bcy <= acy + 2) continue;
       if (dir === 'up' && bcy >= acy - 2) continue;
       if (!visibleX(e, b, vw)) continue;  // hidden carousel items
+      // must really be below/above, not just overlapping a little
+      if (dir === 'down' && b.top < a.top + a.height * 0.5) continue;
+      if (dir === 'up' && b.bottom > a.bottom - a.height * 0.5) continue;
       main = dir === 'down' ? Math.max(0, b.top - a.bottom) : Math.max(0, a.top - b.bottom);
+      var colX = stickyX != null ? stickyX : acx;
       gap = Math.max(0, Math.max(a.left, b.left) - Math.min(a.right, b.right));
-      off = Math.abs(bcx - acx);
-      s = main * 1.2 + gap * 1.5 + off * 0.3;
-      if (s < bs) { bs = s; best = e; }
+      // distance to the remembered column (where Left/Right last left us)
+      off = (colX >= b.left && colX <= b.right) ? 0 : Math.min(Math.abs(colX - b.left), Math.abs(colX - b.right));
+      // strongly prefer the very next row: rows further away cost much more
+      s = main * 3 + off * 1 + gap * 0.2;
+      if (gap === 0 || off === 0) {                 // same column: first choice
+        if (s < bs) { bs = s; best = e; }
+      } else if (s < fs) { fs = s; far = e; }       // e.g. the side menu: only if nothing else
     }
     if (!best && horiz && !retried) {
       var arrow = rowArrow(rowOf(cur), dir);
@@ -676,27 +723,154 @@
     return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (s < 10 ? '0' : '') + s;
   }
 
-  function seek(v, delta) {
-    var target = v.currentTime + delta;
+  /* ---- bottom player bar: time, progress, remaining / LIVE ---- */
+
+  var bar = document.createElement('div');
+  bar.style.cssText =
+    'position:fixed;left:0;right:0;bottom:0;z-index:2147483646;pointer-events:none;display:none;' +
+    'padding:60px 5% 26px;background:linear-gradient(transparent,rgba(0,0,0,.85));' +
+    'font:600 18px/1.2 system-ui,sans-serif;color:#fff;';
+  bar.innerHTML =
+    '<div data-r="top" style="display:flex;align-items:center;gap:14px;margin-bottom:10px">' +
+      '<span data-r="icon" style="font-size:22px;width:26px;text-align:center"></span>' +
+      '<span data-r="live" style="display:none;background:#e50914;border-radius:4px;padding:2px 8px;font-size:14px;letter-spacing:.5px">LIVE</span>' +
+      '<span data-r="target" style="font-size:20px"></span>' +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:16px">' +
+      '<span data-r="left" style="min-width:76px;font-variant-numeric:tabular-nums"></span>' +
+      '<div data-r="track" style="position:relative;flex:1;height:6px;border-radius:3px;background:rgba(255,255,255,.25)">' +
+        '<div data-r="buf" style="position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:rgba(255,255,255,.35)"></div>' +
+        '<div data-r="played" style="position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:#2d8cff"></div>' +
+        '<div data-r="ghost" style="position:absolute;top:-5px;width:4px;height:16px;margin-left:-2px;border-radius:2px;background:#fff;display:none"></div>' +
+        '<div data-r="knob" style="position:absolute;top:-5px;width:16px;height:16px;margin-left:-8px;border-radius:50%;background:#fff;box-shadow:0 0 6px rgba(0,0,0,.6)"></div>' +
+      '</div>' +
+      '<span data-r="right" style="min-width:110px;text-align:right;font-variant-numeric:tabular-nums"></span>' +
+    '</div>';
+  function part(n) { return bar.querySelector('[data-r="' + n + '"]'); }
+  var barTimer = 0, barTick = 0;
+
+  function range(v) {
+    var live = !isFinite(v.duration) || v.duration > 6 * 3600;
+    var lo = 0, hi = isFinite(v.duration) ? v.duration : 0;
     try {
       if (v.seekable && v.seekable.length) {
-        var lo = v.seekable.start(0), hi = v.seekable.end(v.seekable.length - 1);
-        target = Math.min(Math.max(target, lo), hi - 0.5);
-      } else if (isFinite(v.duration)) {
-        target = Math.min(Math.max(target, 0), v.duration - 0.5);
+        var s0 = v.seekable.start(0), s1 = v.seekable.end(v.seekable.length - 1);
+        if (live) { lo = s0; hi = s1; }
+        else if (!hi) { lo = s0; hi = s1; }
       }
     } catch (x) {}
-    v.currentTime = target;
-    var dur = isFinite(v.duration) ? ' / ' + fmt(v.duration) : '';
-    showOsd((delta > 0 ? '⏩ +' : '⏪ ') + delta + 's   ' + fmt(target) + dur);
-    wakeControls(v);
+    return { live: live, lo: lo, hi: hi };
+  }
+
+  function renderBar(v) {
+    var g = range(v), span = Math.max(1, g.hi - g.lo);
+    var now = v.currentTime, target = pendingSeek != null ? pendingSeek : null;
+    var pos = target != null ? target : now;
+    var pct = function (t) { return Math.max(0, Math.min(100, (t - g.lo) / span * 100)) + '%'; };
+    var bufEnd = now;
+    try {
+      for (var i = 0; i < v.buffered.length; i++) {
+        if (v.buffered.start(i) <= now + 0.5 && v.buffered.end(i) >= now) bufEnd = v.buffered.end(i);
+      }
+    } catch (x) {}
+    part('played').style.width = pct(now);
+    part('buf').style.width = pct(bufEnd);
+    part('knob').style.left = pct(pos);
+    part('ghost').style.left = pct(now);
+    part('ghost').style.display = target != null ? 'block' : 'none';
+    part('icon').textContent = v.paused ? '❚❚' : '▶';
+
+    var behind = g.hi - pos;
+    if (g.live) {
+      var atLive = behind < 20;
+      part('live').style.display = 'inline-block';
+      part('live').style.background = atLive ? '#e50914' : 'rgba(255,255,255,.3)';
+      part('left').textContent = atLive ? 'Live' : fmt(pos - g.lo);
+      part('right').textContent = atLive ? 'LIVE' : '−' + fmt(behind) + ' to live';
+    } else {
+      part('live').style.display = 'none';
+      part('left').textContent = fmt(pos);
+      part('right').textContent = '−' + fmt(Math.max(0, g.hi - pos)) + '  /  ' + fmt(g.hi);
+    }
+    if (target != null) {
+      var d = Math.round(target - now);
+      part('target').textContent = (d >= 0 ? '⏩ +' : '⏪ −') + fmt(Math.abs(d)) + '   →  ' +
+        (g.live ? (behind < 20 ? 'LIVE' : '−' + fmt(behind) + ' to live') : fmt(target));
+    } else {
+      part('target').textContent = v.paused ? 'Paused' : '';
+    }
+  }
+
+  function showBar(v, sticky) {
+    var p = overlayParent();
+    if (p && bar.parentNode !== p) p.appendChild(bar);
+    renderBar(v);
+    bar.style.display = 'block';
+    osd.style.display = 'none';
+    clearTimeout(barTimer);
+    clearInterval(barTick);
+    barTick = setInterval(function () {
+      if (bar.style.display === 'none' || !v.isConnected) { clearInterval(barTick); return; }
+      renderBar(v);
+    }, 400);
+    if (!sticky && !v.paused) barTimer = setTimeout(hideBar, 3500);
+  }
+  function hideBar() {
+    if (pendingSeek != null) return;
+    var v = mainVideo();
+    if (v && v.paused) return;                       // stays up while paused
+    bar.style.display = 'none';
+    clearInterval(barTick);
+  }
+
+  /* ---- seeking with a preview: the target moves while you press,
+         the video jumps once you stop ---- */
+  var pendingSeek = null, seekTimer = 0, holdStart = 0;
+
+  function clampTime(v, t) {
+    var g = range(v);
+    return Math.min(Math.max(t, g.lo), Math.max(g.lo, g.hi - 0.5));
+  }
+
+  function seek(v, delta) {
+    var base = pendingSeek != null ? pendingSeek : v.currentTime;
+    pendingSeek = clampTime(v, base + delta);
+    showBar(v, true);
+    clearTimeout(seekTimer);
+    seekTimer = setTimeout(function () { commitSeek(v); }, 700);
+  }
+
+  function commitSeek(v) {
+    clearTimeout(seekTimer);
+    if (pendingSeek == null) return;
+    var t = pendingSeek;
+    pendingSeek = null;
+    try { v.currentTime = t; } catch (x) {}
+    showBar(v, false);
+  }
+
+  function seekStep(ev) {
+    if (!ev || !ev.repeat) { holdStart = performance.now(); return 10; }
+    var held = (performance.now() - holdStart) / 1000;
+    return held > 6 ? 300 : held > 3 ? 120 : held > 1.2 ? 60 : 30;   // speeds up while held
   }
 
   function togglePlay(v) {
-    if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function () {}); showOsd('▶  Play'); }
-    else { v.pause(); showOsd('❚❚  Pause'); }
-    wakeControls(v);
+    if (pendingSeek != null) { commitSeek(v); return; }   // OK confirms a seek
+    if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+    else v.pause();
+    setTimeout(function () { showBar(v, false); }, 30);
   }
+
+  // Show the bar briefly when a video starts, and keep it while paused.
+  document.addEventListener('pause', function (ev) {
+    var v = ev.target;
+    if (v && v.tagName === 'VIDEO' && v === mainVideo()) showBar(v, true);
+  }, true);
+  document.addEventListener('playing', function (ev) {
+    var v = ev.target;
+    if (v && v.tagName === 'VIDEO' && v === mainVideo() && bar.style.display === 'block') showBar(v, false);
+  }, true);
 
   function enterControls(v, dir) {
     controls = true;
@@ -731,9 +905,13 @@
 
   function playerKey(k, ev, v) {
     if (k === 'ok') togglePlay(v);
-    else if (k === 'left') seek(v, ev.repeat ? -30 : -10);
-    else if (k === 'right') seek(v, ev.repeat ? 30 : 10);
-    else enterControls(v, k);
+    else if (k === 'left') seek(v, -seekStep(ev));
+    else if (k === 'right') seek(v, seekStep(ev));
+    else {
+      if (pendingSeek != null) commitSeek(v);
+      bar.style.display = 'none';
+      enterControls(v, k);
+    }
   }
 
   // keep the TV awake only while something is playing
@@ -1145,6 +1323,11 @@
 
   // BACK: returns true if handled here, false to let the app go back a page.
   tv.back = function () {
+    if (pendingSeek != null) {
+      clearTimeout(seekTimer); pendingSeek = null;
+      var pv = mainVideo(); if (pv) showBar(pv, false);
+      return true;
+    }
     if (controls) { leaveControls(); return true; }
     var ae = document.activeElement;
     if (isText(ae)) { ae.blur(); return true; }
@@ -1182,6 +1365,9 @@
 
   // The site changed page (it is a single-page app): start fresh.
   tv.onRoute = function () {
+    stickyX = null;
+    pendingSeek = null;
+    bar.style.display = 'none';
     controls = false;
     ringHidden = false;
     dirty = true;

@@ -12,7 +12,7 @@ jiohotstar.com and adds TV remote navigation on top of the real website.
 | Browsing | Back | Close a pop-up / go back a page (press twice on home to exit) |
 | Search box | Left/Right, OK | Move the cursor, search; Up/Down leaves the box |
 | Video | OK | Play / pause |
-| Video | Left / Right | -10 s / +10 s (hold for 30 s jumps) |
+| Video | Left / Right | Seek with a preview on the bottom bar (tap = 10 s, hold to speed up); OK jumps now, Back cancels |
 | Video | Up / Down | Reach the player buttons (audio, quality, episodes); Back returns |
 | Anywhere | Hold OK | Stream TV menu: video quality (1080p default, 4K, 720p, 480p) and, while watching, audio language |
 | Series page | ⏭ Last episode | Opens the latest season and loads the full list, then jumps to the last episode |
