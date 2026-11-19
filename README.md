@@ -1,4 +1,4 @@
-# Stream TV
+# VJ Hotstar (Stream TV)
 
 Full-screen JioHotstar shell for Chromecast with Google TV. It opens only
 jiohotstar.com and adds TV remote navigation on top of the real website.
