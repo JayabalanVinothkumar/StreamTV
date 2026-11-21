@@ -20,7 +20,7 @@
   //   720 / 480      : lower caps for slow VPN connections
   var QUALITIES = [
     { id: '1080', label: 'Full HD 1080p  (recommended)', maxH: 1080, heavy: false },
-    { id: '4k',   label: '4K / HDR  (may stutter)',     maxH: 2160, heavy: true },
+    { id: '4k',   label: '4K / HDR  (fast internet)',   maxH: 2160, heavy: true },
     { id: '720',  label: 'HD 720p',                     maxH: 720,  heavy: false },
     { id: '480',  label: 'SD 480p  (slow connection)',  maxH: 480,  heavy: false }
   ];
@@ -1211,22 +1211,22 @@
     var b = document.createElement('button');
     b.type = 'button';
     b.textContent = (selected ? '✓  ' : '     ') + text;
-    b.style.cssText = 'display:block;width:100%;text-align:left;margin:5px 0;padding:10px 14px;' +
-      'border:0;border-radius:10px;font:inherit;color:#fff;cursor:pointer;white-space:nowrap;' +
-      'background:' + (selected ? '#2d4bff' : '#262a35');
+    b.style.cssText = 'display:block;width:100%;text-align:left;margin:0;padding:8px 12px;' +
+      'border:0;border-radius:8px;font:500 15px/1.25 system-ui,sans-serif;color:#fff;cursor:pointer;white-space:nowrap;' +
+      'background:' + (selected ? '#2d4bff' : 'rgba(255,255,255,.08)');
     b.addEventListener('click', onClick);
     return b;
   }
 
   function menuColumn(title, subtitle) {
     var col = document.createElement('div');
-    col.style.cssText = 'min-width:250px;max-height:78vh;overflow-y:auto;padding:0 6px';
+    col.style.cssText = 'min-width:210px;padding:0 4px;display:grid;gap:6px;align-content:start';
     var h = document.createElement('div');
     h.textContent = title;
-    h.style.cssText = 'font-weight:700;font-size:20px;margin-bottom:2px';
+    h.style.cssText = 'font-weight:700;font-size:17px';
     var sub = document.createElement('div');
     sub.textContent = subtitle;
-    sub.style.cssText = 'opacity:.6;font-size:13px;margin-bottom:8px';
+    sub.style.cssText = 'opacity:.6;font-size:12.5px;margin:-4px 0 2px';
     col.appendChild(h); col.appendChild(sub);
     return col;
   }
@@ -1261,9 +1261,9 @@
         : 'Your TV can play 4K. Choose 4K / HDR to use it.')
       : 'This TV setup cannot play protected 4K in this app.';
     var box = document.createElement('div');
-    box.style.cssText = 'margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.12);' +
-      'font-size:13.5px;line-height:1.55;opacity:.85;max-width:620px';
-    box.innerHTML = '<div style="font-weight:700;font-size:15px;margin-bottom:4px">TV check</div>' +
+    box.style.cssText = 'padding-left:18px;border-left:1px solid rgba(255,255,255,.12);' +
+      'font-size:12.5px;line-height:1.5;opacity:.9;width:250px';
+    box.innerHTML = '<div style="font-weight:700;font-size:17px;margin-bottom:6px">TV check (4K)</div>' +
       lines.map(function (l) { return '<div>' + l.replace(/</g, '&lt;') + '</div>'; }).join('') +
       (verdict ? '<div style="margin-top:6px;font-weight:600;opacity:1">' + verdict + '</div>' : '');
     return box;
@@ -1279,10 +1279,10 @@
       'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.6);display:flex;' +
       'align-items:center;justify-content:center;font:500 16px/1.3 system-ui,sans-serif;color:#fff';
     var box = document.createElement('div');
-    box.style.cssText = 'background:#16181f;border-radius:16px;padding:20px 22px;' +
-      'box-shadow:0 10px 40px rgba(0,0,0,.6);max-width:94vw';
+    box.style.cssText = 'background:rgba(22,24,31,.97);border-radius:16px;padding:18px 20px 14px;' +
+      'box-shadow:0 10px 40px rgba(0,0,0,.6);max-width:96vw;max-height:94vh;overflow:auto';
     var row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:26px;align-items:flex-start';
+    row.style.cssText = 'display:flex;gap:22px;align-items:flex-start';
     var first = null;
 
     // Video quality
@@ -1302,22 +1302,25 @@
       var known = langInfo.list && langInfo.path === location.pathname ? langInfo.list : null;
       var langs = known || FALLBACK_LANGS;
       var lcol = menuColumn('Audio language', known ? 'Languages of this title' : 'If available for this title');
+      var grid = document.createElement('div');
+      grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
       var curLang = currentLang();
       langs.forEach(function (l) {
         var sel = curLang && (curLang === (l.iso3code || '').toLowerCase() || curLang === (l.iso2code || '').toLowerCase());
         var label = l.name + (l.note && /original/i.test(l.note) ? '  (original)' : '');
         var b = menuButton(label, sel, function () { chooseLanguage(l); });
-        lcol.appendChild(b);
+        grid.appendChild(b);
         if (sel && !first) first = b;
       });
+      lcol.appendChild(grid);
       row.appendChild(lcol);
     }
 
+    row.appendChild(tvCheck());
     box.appendChild(row);
-    box.appendChild(tvCheck());
     var note = document.createElement('div');
     note.textContent = 'Open this menu: hold OK, or press Down while watching  ·  BACK closes';
-    note.style.cssText = 'opacity:.5;font-size:13px;margin-top:10px';
+    note.style.cssText = 'opacity:.5;font-size:12px;margin-top:12px';
     box.appendChild(note);
     menu.appendChild(box);
     menu.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeMenu(); });

@@ -13,8 +13,9 @@ jiohotstar.com and adds TV remote navigation on top of the real website.
 | Search box | Left/Right, OK | Move the cursor, search; Up/Down leaves the box |
 | Video | OK | Play / pause |
 | Video | Left / Right | Seek with a preview on the bottom bar (tap = 10 s, hold to speed up); OK jumps now, Back cancels |
-| Video | Up / Down | Reach the player buttons (audio, quality, episodes); Back returns |
-| Anywhere | Hold OK | Stream TV menu: video quality (1080p default, 4K, 720p, 480p) and, while watching, audio language |
+| Video | Down | VJ menu: video quality, audio language, TV 4K check |
+| Video | Up | The player's own buttons (subtitles, episodes); Back returns |
+| Anywhere | Hold OK | VJ menu (same as Down while watching) |
 | Series page | ⏭ Last episode | Opens the latest season and loads the full list, then jumps to the last episode |
 
 ## Build (GitHub Actions)
