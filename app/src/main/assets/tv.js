@@ -32,6 +32,7 @@
   }
   var Q = getQuality();
   var HEAVY = /av01|av1|hev1|hvc1|hevc|dvh1|dvhe|dvav|dva1|vp09/i;
+  var offeredMaxH = 0, drmLevel = '';   // what the current video offers / got
   function codecBlocked(t) { return !Q.heavy && HEAVY.test(t || ''); }
   function heavyCfg(cfg) {
     var v = cfg && cfg.video;
@@ -54,6 +55,7 @@
     if (mc && mc.decodingInfo) {
       var di = mc.decodingInfo.bind(mc);
       mc.decodingInfo = function (cfg) {
+        try { if (cfg && cfg.video && cfg.video.height > offeredMaxH) offeredMaxH = cfg.video.height; } catch (e) {}
         if (heavyCfg(cfg)) {
           return Promise.resolve({ supported: false, smooth: false, powerEfficient: false,
                                    keySystemAccess: null, configuration: cfg });
@@ -66,6 +68,29 @@
     if (navigator.requestMediaKeySystemAccess) {
       var rmk = navigator.requestMediaKeySystemAccess.bind(navigator);
       navigator.requestMediaKeySystemAccess = function (ks, configs) {
+        // 4K needs the TV's hardware-protected video path (Widevine L1):
+        // ask for it first, keep the site's own request as the fallback.
+        if (Q.id === '4k' && /widevine/i.test(ks || '')) {
+          try {
+            var hw = (configs || []).map(function (c) {
+              var n = Object.assign({}, c);
+              if (n.videoCapabilities) {
+                n.videoCapabilities = n.videoCapabilities.map(function (v) {
+                  return Object.assign({}, v, { robustness: 'HW_SECURE_ALL' });
+                });
+              }
+              return n;
+            });
+            var both = hw.concat(configs || []);
+            return rmk(ks, both).then(function (acc) {
+              try {
+                var vc = acc.getConfiguration().videoCapabilities || [];
+                drmLevel = vc.length && vc[0].robustness === 'HW_SECURE_ALL' ? 'hardware (L1)' : 'software (L3)';
+              } catch (e) {}
+              return acc;
+            });
+          } catch (e) {}
+        }
         try {
           var kept = [];
           (configs || []).forEach(function (c) {
@@ -88,8 +113,10 @@
   // Audio languages of the current title, read from the site's own API
   // responses (settings → audio_language_list → audio_filer).
   var langInfo = { list: null, prefId: null, path: null };
+  var siteQualities = null;            // JioHotstar's own options (4K, Full HD, …)
   function scanForLangs(text) {
-    if (!text || (text.indexOf('audio_filer') < 0 && text.indexOf('user_language_preference_id') < 0)) return;
+    if (!text || (text.indexOf('audio_filer') < 0 && text.indexOf('user_language_preference_id') < 0 &&
+        text.indexOf('video_quality_option') < 0)) return;
     var j;
     try { j = JSON.parse(text); } catch (e) { return; }
     (function walk(o, depth) {
@@ -103,6 +130,9 @@
         if (list.length) { langInfo.list = list; langInfo.path = location.pathname; }
       }
       if (o.user_language_preference_id) langInfo.prefId = String(o.user_language_preference_id);
+      if (Array.isArray(o.video_quality_option)) {
+        siteQualities = o.video_quality_option.filter(function (x) { return x && x.title; });
+      }
       for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) walk(o[k], depth + 1);
     })(j, 0);
   }
@@ -197,11 +227,13 @@
   /* ------------------------------------------------ 2. focus ring + OSD */
 
   var ring = document.createElement('div');
+  // Google TV-style focus: thin white outline that hugs the item's own
+  // rounded corners, soft shadow, and the item itself grows slightly.
   ring.style.cssText =
     'position:fixed;pointer-events:none;z-index:2147483647;display:none;box-sizing:border-box;' +
-    'border:3px solid #fff;border-radius:10px;' +
-    'box-shadow:0 0 0 2px rgba(0,0,0,.55),0 0 22px 2px rgba(255,255,255,.45);' +
-    'transition:left .12s ease-out,top .12s ease-out,width .12s ease-out,height .12s ease-out;';
+    'border:2.5px solid rgba(255,255,255,.95);border-radius:8px;' +
+    'box-shadow:0 0 0 1px rgba(0,0,0,.35),0 10px 28px rgba(0,0,0,.55);' +
+    'transition:left .14s ease-out,top .14s ease-out,width .14s ease-out,height .14s ease-out,border-radius .14s;';
 
   var osd = document.createElement('div');
   osd.style.cssText =
@@ -236,15 +268,54 @@
   var cur = null;          // currently focused element
   var ringHidden = false;  // hidden while watching video
 
+  // Lift the focused tile a little (like the Google TV home screen).
+  var lifted = null, liftedStyle = null;
+  function lift(e) {
+    if (lifted === e) return;
+    drop();
+    if (!e) return;
+    var r = e.getBoundingClientRect();
+    // only tiles and buttons: never big banners, rows or the side menu
+    if (r.width > innerWidth * 0.4 || r.height > innerHeight * 0.6) return;
+    if (e.closest && e.closest('nav,[role=dialog]')) return;
+    lifted = e;
+    liftedStyle = { t: e.style.transform, tr: e.style.transition, z: e.style.zIndex, p: e.style.position };
+    e.style.transition = (e.style.transition ? e.style.transition + ',' : '') + 'transform .15s ease-out';
+    e.style.transform = 'scale(1.06)';
+    if (getComputedStyle(e).position === 'static') e.style.position = 'relative';
+    e.style.zIndex = '3';
+  }
+  function drop() {
+    if (!lifted) return;
+    var e = lifted, st = liftedStyle;
+    lifted = null;
+    e.style.transform = st.t; e.style.zIndex = st.z; e.style.position = st.p;
+    setTimeout(function () { if (lifted !== e) e.style.transition = st.tr; }, 200);
+  }
+
+  function radiusOf(e) {
+    // use the item's own corner radius (or of its picture)
+    var el = e, i = 0;
+    while (el && i < 4) {
+      var rad = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
+      if (rad) return rad;
+      el = el.firstElementChild; i++;
+    }
+    return 6;
+  }
+
   function place() {
-    if (!cur || !cur.isConnected || ringHidden) { ring.style.display = 'none'; return; }
+    if (!cur || !cur.isConnected || ringHidden) { ring.style.display = 'none'; drop(); return; }
+    lift(cur);
     var r = cur.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) { ring.style.display = 'none'; return; }
     attachOverlays();
-    ring.style.left = (r.left - 5) + 'px';
-    ring.style.top = (r.top - 5) + 'px';
-    ring.style.width = (r.width + 10) + 'px';
-    ring.style.height = (r.height + 10) + 'px';
+    var pad = 3;
+    ring.style.left = (r.left - pad) + 'px';
+    ring.style.top = (r.top - pad) + 'px';
+    ring.style.width = (r.width + pad * 2) + 'px';
+    ring.style.height = (r.height + pad * 2) + 'px';
+    ring.style.borderRadius = Math.min(24, radiusOf(cur) + pad) + 'px';
     ring.style.display = 'block';
   }
   // keep the ring glued to its element while the page scrolls/animates
@@ -582,6 +653,19 @@
     saved = null;
   }
 
+  // The fixed side menu / header is its own area; everything else is the page.
+  function regionOf(e) {
+    for (var p = e; p && p !== document.body; p = p.parentElement) {
+      if (p.tagName === 'NAV' || p.tagName === 'HEADER' || p.getAttribute('role') === 'navigation') return p;
+      var pos = getComputedStyle(p).position;
+      if (pos === 'fixed' || pos === 'sticky') {
+        var r = p.getBoundingClientRect();
+        if (r.width < innerWidth * 0.3 || r.height < innerHeight * 0.3) return p;  // a side bar / top bar
+      }
+    }
+    return null;
+  }
+
   function move(dir, retried) {
     var vw = innerWidth, vh = innerHeight;
     validateCur();
@@ -644,6 +728,9 @@
         return;
       }
     }
+    // Up/Down never leave the area you're in (e.g. from the titles into the
+    // left menu, or out of the menu into the titles); Left/Right may.
+    if (!best && far && !horiz && regionOf(far) !== regionOf(cur)) far = null;
     best = best || far;
     if (best) { setFocus(best, dir); return; }
 
@@ -980,7 +1067,11 @@
     if (k === 'ok') togglePlay(v);
     else if (k === 'left') seek(v, -seekStep(ev));
     else if (k === 'right') seek(v, seekStep(ev));
-    else {
+    else if (k === 'down') {                // Down: quality & language menu
+      if (pendingSeek != null) commitSeek(v);
+      bar.style.display = 'none';
+      openMenu();
+    } else {                                 // Up: the player's own buttons
       if (pendingSeek != null) commitSeek(v);
       bar.style.display = 'none';
       enterControls(v, k);
@@ -1140,6 +1231,44 @@
     return col;
   }
 
+  // Can this TV play 4K here? Facts from the TV itself plus what the
+  // current video offers.
+  function tvCheck() {
+    var info = {};
+    try { info = JSON.parse((native && native.deviceInfo && native.deviceInfo()) || '{}'); } catch (e) {}
+    var lines = [];
+    var yes = '✓', no = '✗';
+    var wv = info.widevine || '';
+    var l1 = /L1/i.test(wv);
+    var maxH = parseInt(String(info.maxMode || '').split('x')[1], 10) || 0;
+    var dec4k = info.hevc4k || info.vp94k || info.av14k;
+    lines.push((l1 ? yes : no) + ' Protected 4K playback (Widevine ' + (wv || '?') + ')');
+    lines.push((maxH >= 2160 ? yes : no) + ' 4K screen output (' + (info.maxMode || '?') + ', now ' + (info.mode || '?') + ')');
+    lines.push((dec4k ? yes : no) + ' 4K decoder (' + ['hevc4k', 'vp94k', 'av14k'].filter(function (k) { return info[k]; })
+      .map(function (k) { return { hevc4k: 'HEVC', vp94k: 'VP9', av14k: 'AV1' }[k]; }).join(', ') + ')');
+    lines.push(((info.hdr || []).length ? yes : '–') + ' HDR: ' + ((info.hdr || []).join(', ') || 'none'));
+    if (siteQualities) {
+      lines.push('JioHotstar offers here: ' + siteQualities.map(function (o) {
+        return o.title + (o.accessory && o.accessory.action ? ' 🔒' : '');
+      }).join(', '));
+    }
+    if (offeredMaxH) lines.push('This video is available up to ' + (offeredMaxH >= 2000 ? '4K (' + offeredMaxH + 'p)' : offeredMaxH + 'p'));
+    if (drmLevel) lines.push('Protection in use: ' + drmLevel);
+    var tvOk = l1 && maxH >= 2160 && dec4k;
+    var verdict = !info.widevine ? '' :
+      tvOk ? (offeredMaxH && offeredMaxH < 2000
+        ? 'Your TV can do 4K, but JioHotstar only sends this video up to ' + offeredMaxH + 'p here.'
+        : 'Your TV can play 4K. Choose 4K / HDR to use it.')
+      : 'This TV setup cannot play protected 4K in this app.';
+    var box = document.createElement('div');
+    box.style.cssText = 'margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.12);' +
+      'font-size:13.5px;line-height:1.55;opacity:.85;max-width:620px';
+    box.innerHTML = '<div style="font-weight:700;font-size:15px;margin-bottom:4px">TV check</div>' +
+      lines.map(function (l) { return '<div>' + l.replace(/</g, '&lt;') + '</div>'; }).join('') +
+      (verdict ? '<div style="margin-top:6px;font-weight:600;opacity:1">' + verdict + '</div>' : '');
+    return box;
+  }
+
   function openMenu() {
     if (menu) { closeMenu(); return; }
     menuReturn = cur;
@@ -1185,8 +1314,9 @@
     }
 
     box.appendChild(row);
+    box.appendChild(tvCheck());
     var note = document.createElement('div');
-    note.textContent = 'Hold OK any time to open this menu  ·  BACK to close';
+    note.textContent = 'Open this menu: hold OK, or press Down while watching  ·  BACK closes';
     note.style.cssText = 'opacity:.5;font-size:13px;margin-top:10px';
     box.appendChild(note);
     menu.appendChild(box);
@@ -1233,8 +1363,28 @@
     setTimeout(function () { location.replace(u.toString()); }, 400);
   }
 
+  function sitePrefKey(prefix) {
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (k && k.indexOf('__VIDEO_PREFERENCE_AUDIO_') === 0) return prefix + k.slice('__VIDEO_PREFERENCE_AUDIO'.length);
+    }
+    return null;
+  }
+  var SITE_MATCH = { '4k': /4k|2160|uhd|ultra/i, '1080': /full\s*hd|1080/i, '720': /^hd\b|720/i, '480': /\bsd\b|480|data saver/i };
+  function setSiteQuality(id) {
+    if (!siteQualities) return;
+    var opt = siteQualities.filter(function (o) {
+      return SITE_MATCH[id].test(o.title) && !(o.accessory && o.accessory.action);
+    })[0];
+    var key = sitePrefKey('__VIDEO_PREFERENCE_VIDEO_QUALITY');
+    if (!opt || !key) return;
+    try { localStorage.setItem(key, JSON.stringify({ value: opt })); } catch (e) {}
+  }
+
   function chooseQuality(q) {
     try { localStorage.setItem('streamtv.quality', q.id); } catch (e) {}
+    try { if (native && native.setQuality) native.setQuality(q.id); } catch (e) {}
+    setSiteQuality(q.id);
     var v = document.querySelector('video');
     menu && menu.remove(); menu = null;
     if (v && mainVideo()) {
@@ -1266,6 +1416,12 @@
     });
   })();
 
+  document.addEventListener('playing', function (ev) {
+    if (Q.id === '4k' && ev.target && ev.target === mainVideo()) {
+      try { if (native && native.setQuality) native.setQuality('4k'); } catch (e) {}
+    }
+  }, true);
+
   // Show the real resolution when a video starts or the quality changes
   var shownH = 0, firstHint = true;
   document.addEventListener('resize', function (ev) {
@@ -1274,7 +1430,7 @@
     if (v.videoHeight === shownH) return;
     shownH = v.videoHeight;
     var p = v.videoHeight >= 2000 ? '4K' : v.videoHeight + 'p';
-    showOsd('Playing in ' + p + (firstHint ? '  ·  hold OK for quality' : ''));
+    showOsd('Playing in ' + p + (firstHint ? '  ·  press Down for quality & language' : ''));
     firstHint = false;
   }, true);
 
@@ -1425,6 +1581,8 @@
     cur = null;
     return true;
   };
+
+  tv.openMenu = function () { openMenu(); };
 
   tv.media = function (cmd) {
     var v = mainVideo() || document.querySelector('video');

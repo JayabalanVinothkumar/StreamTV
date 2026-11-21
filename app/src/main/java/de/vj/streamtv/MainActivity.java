@@ -3,6 +3,13 @@ package de.vj.streamtv;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.graphics.Color;
+import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
+import android.media.MediaDrm;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Display;
+import android.view.WindowManager.LayoutParams;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -28,6 +35,10 @@ import androidx.webkit.WebViewFeature;
 
 import java.io.ByteArrayOutputStream;
 import java.util.HashSet;
+import java.util.UUID;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 import java.util.Set;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -52,6 +63,14 @@ public class MainActivity extends Activity {
     private WebChromeClient.CustomViewCallback customViewCallback;
     private String tvScript;
     private long lastBackAtRoot;
+
+    private static final UUID WIDEVINE = new UUID(0xEDEF8BA979D64ACEL, 0xA3C827DCD51D21EDL);
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private boolean okLongFired = false;
+    private final Runnable okLongPress = () -> {
+        okLongFired = true;
+        sendToPage("__tv.openMenu()");
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -193,6 +212,31 @@ public class MainActivity extends Activity {
             return true;
         }
 
+        // OK: a short press goes to the page; holding it opens the VJ menu.
+        // (Google TV's web view swallows long presses, so we time it here.)
+        if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
+                || code == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            if (down) {
+                if (event.getRepeatCount() == 0) {
+                    okLongFired = false;
+                    handler.postDelayed(okLongPress, 800);
+                }
+                return true;
+            }
+            handler.removeCallbacks(okLongPress);
+            if (okLongFired) {
+                okLongFired = false;
+                return true;
+            }
+            long t = SystemClock.uptimeMillis();
+            View target = customView != null ? customView : web;
+            if (target != null) {
+                target.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER, 0));
+                target.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER, 0));
+            }
+            return true;
+        }
+
         // Make sure arrows / OK always reach the page.
         if (customView == null && web != null && !web.hasFocus()) web.requestFocus();
         return super.dispatchKeyEvent(event);
@@ -209,6 +253,46 @@ public class MainActivity extends Activity {
             if ("true".equals(value)) return;          // page handled it
             goBackOrExit();
         });
+    }
+
+    private static boolean hasDecoder(String mime, int w, int h) {
+        try {
+            for (MediaCodecInfo ci : new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
+                if (ci.isEncoder()) continue;
+                for (String t : ci.getSupportedTypes()) {
+                    if (!t.equalsIgnoreCase(mime)) continue;
+                    MediaCodecInfo.VideoCapabilities vc = ci.getCapabilitiesForType(t).getVideoCapabilities();
+                    if (vc != null && vc.isSizeSupported(w, h)) return true;
+                }
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    private void applyDisplayMode(boolean want4k) {
+        try {
+            Display d = getWindowManager().getDefaultDisplay();
+            LayoutParams lp = getWindow().getAttributes();
+            if (!want4k) {
+                if (lp.preferredDisplayModeId != 0) {
+                    lp.preferredDisplayModeId = 0;
+                    getWindow().setAttributes(lp);
+                }
+                return;
+            }
+            Display.Mode cur = d.getMode();
+            if (cur.getPhysicalHeight() >= 2160) return;          // already 4K
+            Display.Mode best = null;
+            for (Display.Mode m : d.getSupportedModes()) {
+                if (m.getPhysicalHeight() < 2160) continue;
+                if (best == null || Math.abs(m.getRefreshRate() - cur.getRefreshRate())
+                        < Math.abs(best.getRefreshRate() - cur.getRefreshRate())) best = m;
+            }
+            if (best != null) {
+                lp.preferredDisplayModeId = best.getModeId();
+                getWindow().setAttributes(lp);
+            }
+        } catch (Exception ignored) { }
     }
 
     private void goBackOrExit() {
@@ -229,6 +313,49 @@ public class MainActivity extends Activity {
     // -------------------------------------------------------------- bridge
 
     private class Bridge {
+        /** What this TV can do for 4K: DRM level, screen, HDR, decoders. */
+        @JavascriptInterface
+        public String deviceInfo() {
+            JSONObject o = new JSONObject();
+            try {
+                try {
+                    MediaDrm drm = new MediaDrm(WIDEVINE);
+                    o.put("widevine", drm.getPropertyString("securityLevel"));
+                    try { o.put("hdcp", drm.getPropertyString("maxHdcpLevel")); } catch (Exception ignored) { }
+                    drm.close();
+                } catch (Exception e) {
+                    o.put("widevine", "unknown");
+                }
+                Display d = getWindowManager().getDefaultDisplay();
+                Display.Mode m = d.getMode();
+                o.put("mode", m.getPhysicalWidth() + "x" + m.getPhysicalHeight());
+                int maxW = 0, maxH = 0;
+                for (Display.Mode x : d.getSupportedModes()) {
+                    if (x.getPhysicalHeight() > maxH) { maxH = x.getPhysicalHeight(); maxW = x.getPhysicalWidth(); }
+                }
+                o.put("maxMode", maxW + "x" + maxH);
+                JSONArray hdr = new JSONArray();
+                Display.HdrCapabilities hc = d.getHdrCapabilities();
+                if (hc != null) {
+                    for (int t : hc.getSupportedHdrTypes()) {
+                        hdr.put(t == 1 ? "Dolby Vision" : t == 2 ? "HDR10" : t == 3 ? "HLG" : t == 4 ? "HDR10+" : String.valueOf(t));
+                    }
+                }
+                o.put("hdr", hdr);
+                o.put("hevc4k", hasDecoder("video/hevc", 3840, 2160));
+                o.put("vp94k", hasDecoder("video/x-vnd.on2.vp9", 3840, 2160));
+                o.put("av14k", hasDecoder("video/av01", 3840, 2160));
+                o.put("avc4k", hasDecoder("video/avc", 3840, 2160));
+            } catch (Exception ignored) { }
+            return o.toString();
+        }
+
+        /** 4K mode: make sure the TV outputs 4K; otherwise let the system choose. */
+        @JavascriptInterface
+        public void setQuality(final String id) {
+            runOnUiThread(() -> applyDisplayMode("4k".equals(id)));
+        }
+
         @JavascriptInterface
         public void goBack() {
             runOnUiThread(MainActivity.this::goBackOrExit);
