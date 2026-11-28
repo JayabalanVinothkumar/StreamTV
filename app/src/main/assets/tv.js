@@ -31,6 +31,29 @@
     return QUALITIES[0];
   }
   var Q = getQuality();
+
+  // JioHotstar remembers what it thinks this device can play
+  // ("_watch_cached_capabilities") and asks its servers for streams to match.
+  // If that was saved under another quality setting (e.g. 1080p), it would
+  // keep hiding 4K, so it is cleared whenever the quality setting changes.
+  function clearSiteCapabilities() {
+    try {
+      for (var i = localStorage.length - 1; i >= 0; i--) {
+        var k = localStorage.key(i);
+        if (k && /capabilit/i.test(k)) localStorage.removeItem(k);
+      }
+      for (var j = sessionStorage.length - 1; j >= 0; j--) {
+        var sk = sessionStorage.key(j);
+        if (sk && /capabilit/i.test(sk)) sessionStorage.removeItem(sk);
+      }
+    } catch (e) {}
+  }
+  try {
+    if (localStorage.getItem('streamtv.capsFor') !== Q.id) {
+      clearSiteCapabilities();
+      localStorage.setItem('streamtv.capsFor', Q.id);
+    }
+  } catch (e) {}
   var HEAVY = /av01|av1|hev1|hvc1|hevc|dvh1|dvhe|dvav|dva1|vp09/i;
   var offeredMaxH = 0, drmLevel = '';   // what the current video offers / got
   function codecBlocked(t) { return !Q.heavy && HEAVY.test(t || ''); }
@@ -1386,6 +1409,8 @@
 
   function chooseQuality(q) {
     try { localStorage.setItem('streamtv.quality', q.id); } catch (e) {}
+    clearSiteCapabilities();
+    try { localStorage.setItem('streamtv.capsFor', q.id); } catch (e) {}
     try { if (native && native.setQuality) native.setQuality(q.id); } catch (e) {}
     setSiteQuality(q.id);
     var v = document.querySelector('video');
